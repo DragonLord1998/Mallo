@@ -1,0 +1,3 @@
+# Mallo
+
+Placeholder project.
