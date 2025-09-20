@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebGPU 3D Chess</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hud">
+        <h1>WebGPU 3D Chess</h1>
+        <div class="status-panel">
+          <div id="turn-indicator" class="status">Current turn: White</div>
+          <div id="check-indicator" class="status"></div>
+          <div class="controls">
+            <button id="reset-btn" type="button">Reset Game</button>
+            <span class="hint">Left click to select, drag right mouse to orbit.</span>
+          </div>
+        </div>
+      </header>
+      <main>
+        <canvas id="gpu-canvas" width="1280" height="720"></canvas>
+      </main>
+      <aside class="sidebar">
+        <h2>Move History</h2>
+        <ol id="move-history"></ol>
+      </aside>
+    </div>
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>
