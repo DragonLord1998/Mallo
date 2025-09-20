@@ -117,7 +117,8 @@ export class App {
     this.legalMoves = [];
     this.hoverSquare = null;
 
-    this.dragState = { active: false, button: 0, lastX: 0, lastY: 0 };
+    this.dragState = this.createInitialDragState();
+    this.touchState = this.createInitialTouchState();
     this.running = false;
 
     this.renderer = null;
@@ -140,10 +141,47 @@ export class App {
     this.handlePointerDown = this.handlePointerDown.bind(this);
     this.handlePointerMove = this.handlePointerMove.bind(this);
     this.handlePointerUp = this.handlePointerUp.bind(this);
+    this.handlePointerLeave = this.handlePointerLeave.bind(this);
     this.handleWheel = this.handleWheel.bind(this);
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.onResize = this.onResize.bind(this);
     this.renderFrame = this.renderFrame.bind(this);
+  }
+
+  createInitialDragState() {
+    return {
+      active: false,
+      pointerId: null,
+      pointerType: null,
+      button: 0,
+      lastX: 0,
+      lastY: 0,
+      startX: 0,
+      startY: 0,
+      moved: false,
+    };
+  }
+
+  createInitialTouchState() {
+    return {
+      pointers: new Map(),
+      tapCandidate: null,
+      tapStart: null,
+      lastCentroid: null,
+      lastDistance: null,
+    };
+  }
+
+  resetDragState() {
+    this.dragState = this.createInitialDragState();
+  }
+
+  clearTouchState() {
+    this.touchState.pointers.clear();
+    this.touchState.tapCandidate = null;
+    this.touchState.tapStart = null;
+    this.touchState.lastCentroid = null;
+    this.touchState.lastDistance = null;
   }
 
   async initialize() {
@@ -182,6 +220,8 @@ export class App {
     this.selectedSquare = null;
     this.hoverSquare = null;
     this.legalMoves = [];
+    this.resetDragState();
+    this.clearTouchState();
     this.updatePieces();
     this.updateHighlights();
     this.updateUI();
@@ -191,9 +231,11 @@ export class App {
 
   attachEventListeners() {
     window.addEventListener('resize', this.onResize);
-    this.canvas.addEventListener('mousedown', this.handlePointerDown);
-    window.addEventListener('mousemove', this.handlePointerMove);
-    window.addEventListener('mouseup', this.handlePointerUp);
+    this.canvas.addEventListener('pointerdown', this.handlePointerDown);
+    window.addEventListener('pointermove', this.handlePointerMove);
+    window.addEventListener('pointerup', this.handlePointerUp);
+    window.addEventListener('pointercancel', this.handlePointerUp);
+    this.canvas.addEventListener('pointerleave', this.handlePointerLeave);
     this.canvas.addEventListener('wheel', this.handleWheel, { passive: false });
     this.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     window.addEventListener('keydown', this.handleKeyDown);
@@ -300,6 +342,10 @@ export class App {
     if (state.lastMove) {
       addHighlight(state.lastMove.from, HIGHLIGHT_COLORS.recent, [0.92, 0.03, 0.92], 0.03);
       addHighlight(state.lastMove.to, HIGHLIGHT_COLORS.recent, [0.92, 0.03, 0.92], 0.03);
+      if (state.lastMove.rook) {
+        addHighlight(state.lastMove.rook.from, HIGHLIGHT_COLORS.recent, [0.92, 0.03, 0.92], 0.03);
+        addHighlight(state.lastMove.rook.to, HIGHLIGHT_COLORS.recent, [0.92, 0.03, 0.92], 0.03);
+      }
     }
 
     if (this.hoverSquare !== null && this.hoverSquare !== this.selectedSquare) {
@@ -366,30 +412,219 @@ export class App {
     this.pathTracer?.resetAccumulation();
   }
 
-  handlePointerDown(event) {
-    event.preventDefault();
-    if (event.button === 0) {
-      const square = this.pickSquare(event.clientX, event.clientY);
-      if (square !== null) {
-        this.handleSquareSelection(square);
-      }
-    }
-    this.dragState = {
-      active: true,
-      button: event.button,
-      lastX: event.clientX,
-      lastY: event.clientY,
-    };
+  getTimestamp() {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
   }
 
-  handlePointerMove(event) {
-    const square = this.pickSquare(event.clientX, event.clientY);
+  capturePointer(event) {
+    if (typeof this.canvas.setPointerCapture === 'function') {
+      try {
+        this.canvas.setPointerCapture(event.pointerId);
+      } catch (error) {
+        // Ignore failures to capture pointer
+      }
+    }
+  }
+
+  releasePointer(event) {
+    if (typeof this.canvas.releasePointerCapture === 'function') {
+      try {
+        if (!this.canvas.hasPointerCapture || this.canvas.hasPointerCapture(event.pointerId)) {
+          this.canvas.releasePointerCapture(event.pointerId);
+        }
+      } catch (error) {
+        // Ignore failures to release pointer
+      }
+    }
+  }
+
+  updateHoverSquare(clientX, clientY) {
+    const square = this.pickSquare(clientX, clientY);
     if (square !== this.hoverSquare) {
       this.hoverSquare = square;
       this.updateHighlights();
     }
+  }
 
-    if (!this.dragState.active) return;
+  initializeMultiTouchGesture() {
+    const points = Array.from(this.touchState.pointers.values());
+    if (points.length < 2) {
+      this.touchState.lastCentroid = null;
+      this.touchState.lastDistance = null;
+      return;
+    }
+    this.touchState.lastCentroid = this.computeCentroid(points);
+    this.touchState.lastDistance = this.computeDistance(points[0], points[1]);
+  }
+
+  handleSingleTouchMove(event) {
+    if (!this.dragState.active || this.dragState.pointerId !== event.pointerId) {
+      this.dragState = {
+        active: true,
+        pointerId: event.pointerId,
+        pointerType: 'touch',
+        button: 0,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+      };
+      this.touchState.tapCandidate = event.pointerId;
+      this.touchState.tapStart = {
+        x: event.clientX,
+        y: event.clientY,
+        time: this.getTimestamp(),
+      };
+      return;
+    }
+
+    const dx = event.clientX - this.dragState.lastX;
+    const dy = event.clientY - this.dragState.lastY;
+    const totalDx = event.clientX - this.dragState.startX;
+    const totalDy = event.clientY - this.dragState.startY;
+    const distance = Math.hypot(totalDx, totalDy);
+
+    if (!this.dragState.moved && distance > 6) {
+      this.dragState.moved = true;
+      if (this.touchState.tapCandidate === event.pointerId) {
+        this.touchState.tapCandidate = null;
+      }
+    }
+
+    if (this.dragState.moved) {
+      this.camera.orbit(dx, dy);
+    }
+
+    this.dragState.lastX = event.clientX;
+    this.dragState.lastY = event.clientY;
+  }
+
+  handleMultiTouchGesture() {
+    const points = Array.from(this.touchState.pointers.values());
+    if (points.length < 2) {
+      return;
+    }
+
+    this.touchState.tapCandidate = null;
+
+    const centroid = this.computeCentroid(points);
+    if (this.touchState.lastCentroid) {
+      const deltaX = centroid.x - this.touchState.lastCentroid.x;
+      const deltaY = centroid.y - this.touchState.lastCentroid.y;
+      if (Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5) {
+        this.camera.pan(deltaX, deltaY);
+      }
+    }
+
+    const [first, second] = points;
+    const distance = this.computeDistance(first, second);
+    if (this.touchState.lastDistance) {
+      const delta = this.touchState.lastDistance - distance;
+      if (Math.abs(delta) > 0.5) {
+        this.camera.zoom(delta * 0.5);
+      }
+    }
+
+    this.touchState.lastCentroid = centroid;
+    this.touchState.lastDistance = distance;
+  }
+
+  computeCentroid(points) {
+    if (points.length === 0) {
+      return { x: 0, y: 0 };
+    }
+    const sum = points.reduce(
+      (acc, point) => {
+        acc.x += point.x;
+        acc.y += point.y;
+        return acc;
+      },
+      { x: 0, y: 0 },
+    );
+    return { x: sum.x / points.length, y: sum.y / points.length };
+  }
+
+  computeDistance(a, b) {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return Math.hypot(dx, dy);
+  }
+
+  handlePointerDown(event) {
+    event.preventDefault();
+    if (event.pointerType === 'touch') {
+      this.touchState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (this.touchState.pointers.size === 1) {
+        this.dragState = {
+          active: true,
+          pointerId: event.pointerId,
+          pointerType: 'touch',
+          button: 0,
+          lastX: event.clientX,
+          lastY: event.clientY,
+          startX: event.clientX,
+          startY: event.clientY,
+          moved: false,
+        };
+        this.touchState.tapCandidate = event.pointerId;
+        this.touchState.tapStart = {
+          x: event.clientX,
+          y: event.clientY,
+          time: this.getTimestamp(),
+        };
+      } else if (this.touchState.pointers.size === 2) {
+        this.touchState.tapCandidate = null;
+        this.resetDragState();
+        this.initializeMultiTouchGesture();
+      } else {
+        this.touchState.tapCandidate = null;
+        this.resetDragState();
+        this.initializeMultiTouchGesture();
+      }
+    } else {
+      if (event.button === 0) {
+        const square = this.pickSquare(event.clientX, event.clientY);
+        if (square !== null) {
+          this.handleSquareSelection(square);
+        }
+      }
+      this.dragState = {
+        active: true,
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        button: event.button,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+      };
+    }
+
+    this.capturePointer(event);
+  }
+
+  handlePointerMove(event) {
+    if (event.pointerType === 'touch') {
+      if (!this.touchState.pointers.has(event.pointerId)) {
+        return;
+      }
+      this.touchState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (this.touchState.pointers.size >= 2) {
+        this.handleMultiTouchGesture();
+      } else {
+        this.handleSingleTouchMove(event);
+      }
+      return;
+    }
+
+    this.updateHoverSquare(event.clientX, event.clientY);
+
+    if (!this.dragState.active || this.dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
     const dx = event.clientX - this.dragState.lastX;
     const dy = event.clientY - this.dragState.lastY;
 
@@ -403,9 +638,80 @@ export class App {
     this.dragState.lastY = event.clientY;
   }
 
-  handlePointerUp() {
-    this.dragState.active = false;
-    this.dragState.button = 0;
+  handlePointerUp(event) {
+    event.preventDefault();
+    this.releasePointer(event);
+
+    if (event.pointerType === 'touch') {
+      const pointerInfo = this.touchState.pointers.get(event.pointerId);
+      this.touchState.pointers.delete(event.pointerId);
+
+      const tapCandidate = this.touchState.tapCandidate;
+      const tapStart = this.touchState.tapStart;
+      let wasTap = false;
+      if (tapCandidate === event.pointerId && tapStart) {
+        const endX = pointerInfo ? pointerInfo.x : event.clientX;
+        const endY = pointerInfo ? pointerInfo.y : event.clientY;
+        const movement = Math.hypot(endX - tapStart.x, endY - tapStart.y);
+        const duration = this.getTimestamp() - tapStart.time;
+        if (movement < 12 && duration < 500) {
+          wasTap = true;
+        }
+      }
+
+      if (wasTap) {
+        const square = this.pickSquare(event.clientX, event.clientY);
+        if (square !== null) {
+          this.handleSquareSelection(square);
+        }
+      }
+
+      if (this.touchState.pointers.size === 1) {
+        const [remainingId, position] = this.touchState.pointers.entries().next().value;
+        this.dragState = {
+          active: true,
+          pointerId: remainingId,
+          pointerType: 'touch',
+          button: 0,
+          lastX: position.x,
+          lastY: position.y,
+          startX: position.x,
+          startY: position.y,
+          moved: false,
+        };
+        this.touchState.tapCandidate = remainingId;
+        this.touchState.tapStart = {
+          x: position.x,
+          y: position.y,
+          time: this.getTimestamp(),
+        };
+        this.touchState.lastCentroid = null;
+        this.touchState.lastDistance = null;
+      } else if (this.touchState.pointers.size >= 2) {
+        this.initializeMultiTouchGesture();
+      } else {
+        this.resetDragState();
+        this.touchState.tapCandidate = null;
+        this.touchState.tapStart = null;
+        this.touchState.lastCentroid = null;
+        this.touchState.lastDistance = null;
+      }
+      return;
+    }
+
+    if (this.dragState.pointerId === event.pointerId) {
+      this.resetDragState();
+    }
+  }
+
+  handlePointerLeave(event) {
+    if (event.pointerType === 'touch') {
+      return;
+    }
+    if (this.hoverSquare !== null) {
+      this.hoverSquare = null;
+      this.updateHighlights();
+    }
   }
 
   handleWheel(event) {
