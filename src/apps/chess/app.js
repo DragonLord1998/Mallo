@@ -1,11 +1,11 @@
-import { createWebGPUContext } from './webgpu/context.js';
+import { createWebGPUContext } from '../../webgpu/context.js';
 import { Renderer } from './graphics/renderer.js';
 import { PathTracer } from './graphics/pathTracer.js';
 import { CameraController } from './camera/cameraController.js';
 import { ChessGame, PieceType, PieceColor } from './game/chessGame.js';
 import { StockfishEngine } from './game/stockfishEngine.js';
-import { mat4 } from './math/mat4.js';
-import { vec3 } from './math/vec3.js';
+import { mat4 } from '../../math/mat4.js';
+import { vec3 } from '../../math/vec3.js';
 
 const BOARD_HALF = 3.5;
 const BOARD_SCALE = [0.98, 0.08, 0.98];

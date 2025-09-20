@@ -1,5 +1,5 @@
-import { mat4 } from '../math/mat4.js';
-import { vec3 } from '../math/vec3.js';
+import { mat4 } from '../../../math/mat4.js';
+import { vec3 } from '../../../math/vec3.js';
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
