@@ -1,5 +1,6 @@
 import { createWebGPUContext } from './webgpu/context.js';
 import { Renderer } from './graphics/renderer.js';
+import { PathTracer } from './graphics/pathTracer.js';
 import { CameraController } from './camera/cameraController.js';
 import { ChessGame, PieceType, PieceColor } from './game/chessGame.js';
 import { mat4 } from './math/mat4.js';
@@ -120,6 +121,7 @@ export class App {
     this.running = false;
 
     this.renderer = null;
+    this.pathTracer = null;
     this.camera = null;
 
     this.device = null;
@@ -128,10 +130,18 @@ export class App {
 
     this.boardInstances = [];
 
+    this.usePathTracer = false;
+    this.cameraState = {
+      inverseViewProjection: new Float32Array(16),
+      position: new Float32Array(3),
+      valid: false,
+    };
+
     this.handlePointerDown = this.handlePointerDown.bind(this);
     this.handlePointerMove = this.handlePointerMove.bind(this);
     this.handlePointerUp = this.handlePointerUp.bind(this);
     this.handleWheel = this.handleWheel.bind(this);
+    this.handleKeyDown = this.handleKeyDown.bind(this);
     this.onResize = this.onResize.bind(this);
     this.renderFrame = this.renderFrame.bind(this);
   }
@@ -145,10 +155,14 @@ export class App {
     this.renderer = new Renderer({ device, context, format, canvas: this.canvas });
     await this.renderer.initialize();
 
+    this.pathTracer = new PathTracer({ device, context, format, canvas: this.canvas });
+    await this.pathTracer.initialize();
+
     this.camera = new CameraController({ canvas: this.canvas, target: [0, 1.0, 0], radius: 12 });
 
     this.boardInstances = this.buildBoardInstances();
     this.renderer.setBoardInstances(this.boardInstances);
+    this.pathTracer.setBoardInstances(this.boardInstances);
     this.updatePieces();
     this.updateHighlights();
     this.updateUI();
@@ -172,6 +186,7 @@ export class App {
     this.updateHighlights();
     this.updateUI();
     this.onMessage?.('');
+    this.pathTracer?.resetAccumulation();
   }
 
   attachEventListeners() {
@@ -181,6 +196,7 @@ export class App {
     window.addEventListener('mouseup', this.handlePointerUp);
     this.canvas.addEventListener('wheel', this.handleWheel, { passive: false });
     this.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    window.addEventListener('keydown', this.handleKeyDown);
   }
 
   onResize() {
@@ -201,7 +217,9 @@ export class App {
         alphaMode: 'opaque',
       });
       this.renderer.resize(width, height);
+      this.pathTracer?.resize(width, height);
       this.camera.updateProjection(width / height);
+      this.pathTracer?.resetAccumulation();
     }
   }
 
@@ -210,12 +228,25 @@ export class App {
     this.handleResize();
     const viewProjection = this.camera.getViewProjectionMatrix();
     const cameraPosition = this.camera.getCameraPosition();
+    const inverseViewProjection = this.camera.getInverseViewProjectionMatrix();
     this.renderer.updateScene({
       viewProjection,
       cameraPosition,
       lightDirection,
     });
-    this.renderer.render();
+    if (this.usePathTracer && this.pathTracer) {
+      if (this.updateCameraState(inverseViewProjection, cameraPosition)) {
+        this.pathTracer.resetAccumulation();
+      }
+      this.pathTracer.updateScene({
+        inverseViewProjection,
+        cameraPosition,
+        lightDirection,
+      });
+      this.pathTracer.render();
+    } else {
+      this.renderer.render();
+    }
     requestAnimationFrame(this.renderFrame);
   }
 
@@ -251,6 +282,7 @@ export class App {
       }
     }
     this.renderer.updatePieceInstances(instances);
+    this.pathTracer?.updatePieceInstances(instances);
   }
 
   updateHighlights() {
@@ -284,6 +316,7 @@ export class App {
     }
 
     this.renderer.setHighlightInstances(highlightInstances);
+    this.pathTracer?.setHighlightInstances(highlightInstances);
   }
 
   updateUI() {
@@ -296,6 +329,41 @@ export class App {
       : `Player to move: ${capitalize(state.currentPlayer)}`;
     const checkLabel = !winner && state.inCheck ? `${capitalize(state.inCheck)} is in check!` : '';
     this.onStateChange?.({ turnLabel, checkLabel, history: state.history });
+  }
+
+  updateCameraState(inverseViewProjection, cameraPosition) {
+    const state = this.cameraState;
+    let changed = !state.valid;
+    if (!changed) {
+      for (let i = 0; i < 16; i += 1) {
+        if (Math.abs(state.inverseViewProjection[i] - inverseViewProjection[i]) > 1e-4) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (!changed) {
+      for (let i = 0; i < 3; i += 1) {
+        if (Math.abs(state.position[i] - cameraPosition[i]) > 1e-4) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    state.inverseViewProjection.set(inverseViewProjection);
+    state.position.set(cameraPosition);
+    state.valid = true;
+    return changed;
+  }
+
+  handleKeyDown(event) {
+    if (event.defaultPrevented) return;
+    if (event.repeat) return;
+    if (event.key?.toLowerCase() !== 'p') return;
+    event.preventDefault();
+    this.usePathTracer = !this.usePathTracer;
+    this.cameraState.valid = false;
+    this.pathTracer?.resetAccumulation();
   }
 
   handlePointerDown(event) {
