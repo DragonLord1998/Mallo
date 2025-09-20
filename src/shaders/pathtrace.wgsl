@@ -1,29 +1,29 @@
 struct SceneUniforms {
-  invViewProj : mat4x4<f32>;
-  cameraPos : vec3<f32>;
-  frameIndex : u32;
-  lightDir : vec3<f32>;
-  objectCount : u32;
-  resolution : vec2<f32>;
-  maxBounces : u32;
-  environment : f32;
+  invViewProj : mat4x4<f32>,
+  cameraPos : vec3<f32>,
+  frameIndex : u32,
+  lightDir : vec3<f32>,
+  objectCount : u32,
+  resolution : vec2<f32>,
+  maxBounces : u32,
+  environment : f32,
 };
 
 struct Box {
-  min : vec3<f32>;
-  _pad0 : f32;
-  max : vec3<f32>;
-  _pad1 : f32;
-  color : vec3<f32>;
-  emission : f32;
+  min : vec3<f32>,
+  _pad0 : f32,
+  max : vec3<f32>,
+  _pad1 : f32,
+  color : vec3<f32>,
+  emission : f32,
 };
 
 struct HitInfo {
-  distance : f32;
-  normal : vec3<f32>;
-  color : vec3<f32>;
-  emission : f32;
-  hit : bool;
+  distance : f32,
+  normal : vec3<f32>,
+  color : vec3<f32>,
+  emission : f32,
+  hit : bool,
 };
 
 @group(0) @binding(0) var<uniform> scene : SceneUniforms;
@@ -44,9 +44,9 @@ fn safeInv(v : f32) -> f32 {
 }
 
 struct Intersection {
-  hit : bool;
-  distance : f32;
-  normal : vec3<f32>;
+  hit : bool,
+  distance : f32,
+  normal : vec3<f32>,
 };
 
 fn intersectBox(origin : vec3<f32>, dir : vec3<f32>, minB : vec3<f32>, maxB : vec3<f32>) -> Intersection {
