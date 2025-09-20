@@ -218,6 +218,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const turnIndicator = document.getElementById('turn-indicator');
   const statusIndicator = document.getElementById('check-indicator');
   const moveHistory = document.getElementById('move-history');
+  const moveLog = document.querySelector('.move-log');
+  const moveLogToggle = document.getElementById('move-log-toggle');
   const resetBtn = document.getElementById('reset-btn');
   const pathToggle = document.getElementById('path-toggle');
   const engineIndicator = document.getElementById('engine-indicator');
@@ -232,11 +234,34 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeMessage = '';
   let pathEnabled = false;
   let activeLauncherCard = null;
+  const moveLogMedia = window.matchMedia('(max-width: 768px)');
+  let moveLogCollapsed = moveLogMedia.matches;
+  let lastHistoryCount = 0;
 
   const updateStatusMessage = () => {
     const message = activeMessage || fallbackMessage;
     statusIndicator.textContent = message;
     statusIndicator.classList.toggle('visible', Boolean(message));
+  };
+
+  const applyMoveLogState = () => {
+    if (moveLog) {
+      const hidden = moveLogCollapsed && moveLogMedia.matches;
+      moveLog.classList.toggle('is-hidden', hidden);
+      moveLog.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+      if (!moveLogMedia.matches) {
+        moveLog.classList.remove('is-hidden');
+        moveLog.setAttribute('aria-hidden', 'false');
+      }
+    }
+    if (moveLogToggle) {
+      moveLogToggle.setAttribute('aria-expanded', (!moveLogCollapsed || !moveLogMedia.matches).toString());
+      moveLogToggle.classList.toggle('is-active', !moveLogCollapsed || !moveLogMedia.matches);
+      moveLogToggle.classList.toggle('is-hidden', !moveLogMedia.matches);
+      if (!moveLogCollapsed || !moveLogMedia.matches) {
+        moveLogToggle.classList.remove('has-updates');
+      }
+    }
   };
 
   const setFilter = (value) => {
@@ -266,11 +291,34 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  const handleMoveLogMediaChange = (event) => {
+    if (!event.matches) {
+      moveLogCollapsed = false;
+      moveLogToggle?.classList.remove('has-updates');
+    }
+    applyMoveLogState();
+  };
+
+  if (typeof moveLogMedia.addEventListener === 'function') {
+    moveLogMedia.addEventListener('change', handleMoveLogMediaChange);
+  } else if (typeof moveLogMedia.addListener === 'function') {
+    moveLogMedia.addListener(handleMoveLogMediaChange);
+  }
+
+  moveLogToggle?.addEventListener('click', () => {
+    moveLogCollapsed = !moveLogCollapsed;
+    if (!moveLogCollapsed) {
+      moveLogToggle.classList.remove('has-updates');
+    }
+    applyMoveLogState();
+  });
+
   if (nebula) {
     nebula.setPalette('all');
   }
 
   setFilter('all');
+  applyMoveLogState();
 
   const revealChessShell = () => {
     launcher?.classList.add('is-hidden');
@@ -313,6 +361,8 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    lastHistoryCount = 0;
+
     const app = new App({
       canvas,
       onStateChange: (state) => {
@@ -330,6 +380,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         moveHistory.appendChild(fragment);
         moveHistory.scrollTop = moveHistory.scrollHeight;
+
+        const historyCount = state.history.length;
+        if (moveLogToggle && moveLogMedia.matches) {
+          const hasUpdates = moveLogCollapsed && historyCount > lastHistoryCount;
+          moveLogToggle.classList.toggle('has-updates', hasUpdates);
+        }
+        lastHistoryCount = historyCount;
 
         pathEnabled = Boolean(state.usePathTracer);
         pathToggle.textContent = pathEnabled ? 'Disable Path Tracing' : 'Enable Path Tracing';

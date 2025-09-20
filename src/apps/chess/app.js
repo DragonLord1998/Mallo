@@ -148,6 +148,16 @@ export class App {
       valid: false,
     };
 
+    this.cameraInteraction = {
+      active: false,
+      returning: false,
+      lastInputTime: 0,
+      currentAnchor: 0,
+    };
+    this.anchorSnapDelayMs = 700;
+    this.autoAnchorEnabled = true;
+    this.lastFrameTime = null;
+  
     this.handlePointerDown = this.handlePointerDown.bind(this);
     this.handlePointerMove = this.handlePointerMove.bind(this);
     this.handlePointerUp = this.handlePointerUp.bind(this);
@@ -169,6 +179,7 @@ export class App {
       startX: 0,
       startY: 0,
       moved: false,
+      usedCamera: false,
     };
   }
 
@@ -216,6 +227,8 @@ export class App {
     await this.pathTracer.initialize();
 
     this.camera = new CameraController({ canvas: this.canvas, target: [0, 1.0, 0], radius: 12 });
+    this.cameraInteraction.currentAnchor = this.camera.getNearestAnchorIndex();
+    this.cameraInteraction.lastInputTime = this.getTimestamp();
 
     this.boardInstances = this.buildBoardInstances();
     this.renderer.setBoardInstances(this.boardInstances);
@@ -246,6 +259,7 @@ export class App {
   start() {
     if (this.running) return;
     this.running = true;
+    this.lastFrameTime = null;
     requestAnimationFrame(this.renderFrame);
   }
 
@@ -308,9 +322,22 @@ export class App {
     }
   }
 
-  renderFrame() {
+  renderFrame(timestamp) {
     if (!this.running) return;
+
+    const now = typeof timestamp === 'number' ? timestamp : this.getTimestamp();
+    const lastTime = this.lastFrameTime ?? now;
+    const deltaSeconds = Math.max((now - lastTime) / 1000, 0);
+    this.lastFrameTime = now;
+
     this.handleResize();
+
+    if (this.autoAnchorEnabled) {
+      this.updateAutoAnchor(now);
+    }
+
+    this.camera.update(deltaSeconds);
+
     const viewProjection = this.camera.getViewProjectionMatrix();
     const cameraPosition = this.camera.getCameraPosition();
     const inverseViewProjection = this.camera.getInverseViewProjectionMatrix();
@@ -487,6 +514,66 @@ export class App {
     return typeof performance !== 'undefined' ? performance.now() : Date.now();
   }
 
+  markCameraInteraction(active = true) {
+    if (!this.camera) {
+      return;
+    }
+    const now = this.getTimestamp();
+    this.cameraInteraction.lastInputTime = now;
+    if (active) {
+      this.cameraInteraction.active = true;
+      this.cameraInteraction.returning = false;
+    }
+  }
+
+  endCameraInteraction() {
+    if (!this.camera) {
+      return;
+    }
+    this.cameraInteraction.active = false;
+    this.cameraInteraction.lastInputTime = this.getTimestamp();
+  }
+
+  updateAutoAnchor(nowMs) {
+    if (!this.camera) {
+      return;
+    }
+    const interaction = this.cameraInteraction;
+    if (interaction.active) {
+      return;
+    }
+    if (!this.autoAnchorEnabled) {
+      interaction.returning = false;
+      return;
+    }
+
+    if (!interaction.returning) {
+      if (nowMs - interaction.lastInputTime >= this.anchorSnapDelayMs) {
+        interaction.currentAnchor = this.camera.snapToNearestAnchor({ immediate: false });
+        interaction.returning = true;
+        interaction.lastInputTime = nowMs;
+      }
+      return;
+    }
+
+    if (interaction.returning && this.camera.isSettled()) {
+      interaction.returning = false;
+      interaction.currentAnchor = this.camera.getNearestAnchorIndex();
+      interaction.lastInputTime = nowMs;
+      this.notifyAnchorSnap();
+    }
+  }
+
+  notifyAnchorSnap() {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try {
+        navigator.vibrate(10);
+      } catch (error) {
+        // Ignore vibration errors (e.g., permissions)
+      }
+    }
+  }
+
   capturePointer(event) {
     if (typeof this.canvas.setPointerCapture === 'function') {
       try {
@@ -540,6 +627,7 @@ export class App {
         startX: event.clientX,
         startY: event.clientY,
         moved: false,
+        usedCamera: false,
       };
       this.touchState.tapCandidate = event.pointerId;
       this.touchState.tapStart = {
@@ -564,7 +652,11 @@ export class App {
     }
 
     if (this.dragState.moved) {
-      this.camera.orbit(dx, dy);
+      const orbitX = dx;
+      const orbitY = dy * 0.6;
+      this.camera.orbit(orbitX, orbitY, { immediate: true });
+      this.dragState.usedCamera = true;
+      this.markCameraInteraction(true);
     }
 
     this.dragState.lastX = event.clientX;
@@ -584,7 +676,8 @@ export class App {
       const deltaX = centroid.x - this.touchState.lastCentroid.x;
       const deltaY = centroid.y - this.touchState.lastCentroid.y;
       if (Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5) {
-        this.camera.pan(deltaX, deltaY);
+        this.camera.pan(deltaX, deltaY, { immediate: true });
+        this.markCameraInteraction(true);
       }
     }
 
@@ -593,7 +686,8 @@ export class App {
     if (this.touchState.lastDistance) {
       const delta = this.touchState.lastDistance - distance;
       if (Math.abs(delta) > 0.5) {
-        this.camera.zoom(delta * 0.5);
+        this.camera.zoom(delta * 0.5, { immediate: true });
+        this.markCameraInteraction(true);
       }
     }
 
@@ -635,19 +729,21 @@ export class App {
   handlePointerDown(event) {
     event.preventDefault();
     if (event.pointerType === 'touch') {
+      this.markCameraInteraction(true);
       this.touchState.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (this.touchState.pointers.size === 1) {
         this.dragState = {
           active: true,
           pointerId: event.pointerId,
-          pointerType: 'touch',
-          button: 0,
-          lastX: event.clientX,
-          lastY: event.clientY,
-          startX: event.clientX,
-          startY: event.clientY,
-          moved: false,
-        };
+        pointerType: 'touch',
+        button: 0,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        usedCamera: false,
+      };
         this.touchState.tapCandidate = event.pointerId;
         this.touchState.tapStart = {
           x: event.clientX,
@@ -670,6 +766,9 @@ export class App {
           this.handleSquareSelection(square);
         }
       }
+      if (event.button !== 0 || event.shiftKey) {
+        this.markCameraInteraction(true);
+      }
       this.dragState = {
         active: true,
         pointerId: event.pointerId,
@@ -680,6 +779,7 @@ export class App {
         startX: event.clientX,
         startY: event.clientY,
         moved: false,
+        usedCamera: false,
       };
     }
 
@@ -707,12 +807,20 @@ export class App {
     }
 
     const dx = event.clientX - this.dragState.lastX;
-    const dy = event.clientY - this.dragState.lastY;
+   const dy = event.clientY - this.dragState.lastY;
 
     if (this.dragState.button === 2) {
-      this.camera.orbit(dx, dy);
+      this.camera.orbit(dx, dy, { immediate: true });
+      if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+        this.dragState.usedCamera = true;
+        this.markCameraInteraction(true);
+      }
     } else if (this.dragState.button === 1 || (event.shiftKey && this.dragState.button === 0)) {
-      this.camera.pan(dx, dy);
+      this.camera.pan(dx, dy, { immediate: true });
+      if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+        this.dragState.usedCamera = true;
+        this.markCameraInteraction(true);
+      }
     }
 
     this.dragState.lastX = event.clientX;
@@ -759,6 +867,7 @@ export class App {
           startX: position.x,
           startY: position.y,
           moved: false,
+          usedCamera: false,
         };
         this.touchState.tapCandidate = remainingId;
         this.touchState.tapStart = {
@@ -768,20 +877,24 @@ export class App {
         };
         this.touchState.lastCentroid = null;
         this.touchState.lastDistance = null;
+        this.markCameraInteraction(true);
       } else if (this.touchState.pointers.size >= 2) {
         this.initializeMultiTouchGesture();
+        this.markCameraInteraction(true);
       } else {
         this.resetDragState();
         this.touchState.tapCandidate = null;
         this.touchState.tapStart = null;
         this.touchState.lastCentroid = null;
         this.touchState.lastDistance = null;
+        this.endCameraInteraction();
       }
       return;
     }
 
     if (this.dragState.pointerId === event.pointerId) {
       this.resetDragState();
+      this.endCameraInteraction();
     }
   }
 
@@ -797,7 +910,8 @@ export class App {
 
   handleWheel(event) {
     event.preventDefault();
-    this.camera.zoom(event.deltaY);
+    this.camera.zoom(event.deltaY, { immediate: true });
+    this.markCameraInteraction(false);
   }
 
   handleSquareSelection(squareIndex) {
