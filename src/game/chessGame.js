@@ -41,6 +41,22 @@ const PIECE_TO_LETTER = {
   [PieceType.KING]: 'K',
 };
 
+const TYPE_TO_CHAR = {
+  [PieceType.PAWN]: 'p',
+  [PieceType.KNIGHT]: 'n',
+  [PieceType.BISHOP]: 'b',
+  [PieceType.ROOK]: 'r',
+  [PieceType.QUEEN]: 'q',
+  [PieceType.KING]: 'k',
+};
+
+const PROMOTION_OPTIONS = [
+  PieceType.QUEEN,
+  PieceType.ROOK,
+  PieceType.BISHOP,
+  PieceType.KNIGHT,
+];
+
 const FILES = 'abcdefgh';
 
 function indexToCoord(index) {
@@ -64,6 +80,11 @@ function capitalize(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function pieceToFenChar(piece) {
+  const base = TYPE_TO_CHAR[piece.type] ?? '';
+  return piece.color === PieceColor.WHITE ? base.toUpperCase() : base;
+}
+
 export class ChessGame {
   constructor() {
     this.board = new Array(64).fill(null);
@@ -73,12 +94,16 @@ export class ChessGame {
     this.lastMove = null;
     this.winner = null;
     this.enPassantTarget = null;
+    this.halfmoveClock = 0;
+    this.fullmoveNumber = 1;
     this.reset();
   }
 
   reset() {
     this.board.fill(null);
     this.nextPieceId = 1;
+    this.halfmoveClock = 0;
+    this.fullmoveNumber = 1;
     for (let row = 0; row < 8; row += 1) {
       for (let col = 0; col < 8; col += 1) {
         const char = STARTING_BOARD[row][col];
@@ -124,6 +149,8 @@ export class ChessGame {
       inCheck: this.isKingInCheck(this.currentPlayer) ? this.currentPlayer : null,
       winner: this.winner,
       lastMove: this.lastMove,
+      halfmoveClock: this.halfmoveClock,
+      fullmoveNumber: this.fullmoveNumber,
     };
   }
 
@@ -136,7 +163,7 @@ export class ChessGame {
     return this.generateLegalMoves(index, piece, piece.color);
   }
 
-  move(fromIndex, toIndex) {
+  move(fromIndex, toIndex, promotionType = null) {
     if (this.winner) {
       return { success: false, message: 'Game over' };
     }
@@ -145,7 +172,24 @@ export class ChessGame {
       return { success: false, message: 'Select a valid piece' };
     }
     const legalMoves = this.generateLegalMoves(fromIndex, piece, piece.color);
-    const targetMove = legalMoves.find((move) => move.to === toIndex);
+    let targetMove = null;
+    for (const move of legalMoves) {
+      if (move.to !== toIndex) {
+        continue;
+      }
+      if (move.promotion) {
+        if (promotionType && move.promotion === promotionType) {
+          targetMove = move;
+          break;
+        }
+        if (!promotionType && !targetMove) {
+          targetMove = move;
+        }
+      } else {
+        targetMove = move;
+        break;
+      }
+    }
     if (!targetMove) {
       return { success: false, message: 'Illegal move' };
     }
@@ -156,6 +200,13 @@ export class ChessGame {
 
     const moveState = this.applyMove(fromIndex, targetMove);
     const capturedPiece = moveState.captured ?? moveState.enPassantCaptured ?? null;
+
+    const isPawnMove = originalType === PieceType.PAWN;
+    const didCapture = Boolean(capturedPiece);
+    this.halfmoveClock = isPawnMove || didCapture ? 0 : this.halfmoveClock + 1;
+    if (piece.color === PieceColor.BLACK) {
+      this.fullmoveNumber += 1;
+    }
 
     this.updateEnPassantState({
       originalType,
@@ -214,6 +265,7 @@ export class ChessGame {
       winner: this.winner,
       castle: targetMove.castle ?? null,
       enPassant: Boolean(targetMove.enPassant),
+      movedColor: piece.color,
     };
   }
 
@@ -345,12 +397,20 @@ export class ChessGame {
         const direction = piece.color === PieceColor.WHITE ? -1 : 1;
         const startRow = piece.color === PieceColor.WHITE ? 6 : 1;
         const forwardRow = row + direction;
-        if (isOnBoard(forwardRow, col) && !this.board[coordToIndex(forwardRow, col)]) {
-          const promotion = forwardRow === 0 || forwardRow === 7 ? PieceType.QUEEN : null;
-          moves.push({ from: index, to: coordToIndex(forwardRow, col), promotion });
-          const twoRow = row + direction * 2;
-          if (row === startRow && isOnBoard(twoRow, col) && !this.board[coordToIndex(twoRow, col)]) {
-            moves.push({ from: index, to: coordToIndex(twoRow, col) });
+        if (isOnBoard(forwardRow, col)) {
+          const forwardIndex = coordToIndex(forwardRow, col);
+          if (!this.board[forwardIndex]) {
+            if (forwardRow === 0 || forwardRow === 7) {
+              for (const promotion of PROMOTION_OPTIONS) {
+                moves.push({ from: index, to: forwardIndex, promotion });
+              }
+            } else {
+              moves.push({ from: index, to: forwardIndex });
+              const twoRow = row + direction * 2;
+              if (row === startRow && isOnBoard(twoRow, col) && !this.board[coordToIndex(twoRow, col)]) {
+                moves.push({ from: index, to: coordToIndex(twoRow, col) });
+              }
+            }
           }
         }
         for (const offset of [-1, 1]) {
@@ -360,12 +420,16 @@ export class ChessGame {
           const targetIndex = coordToIndex(targetRow, targetCol);
           const targetPiece = this.board[targetIndex];
           if (targetPiece && targetPiece.color !== piece.color) {
-            const promotion = targetRow === 0 || targetRow === 7 ? PieceType.QUEEN : null;
-            moves.push({
-              from: index,
-              to: targetIndex,
-              promotion,
-            });
+            if (targetRow === 0 || targetRow === 7) {
+              for (const promotion of PROMOTION_OPTIONS) {
+                moves.push({ from: index, to: targetIndex, promotion });
+              }
+            } else {
+              moves.push({
+                from: index,
+                to: targetIndex,
+              });
+            }
             continue;
           }
 
@@ -679,6 +743,66 @@ export class ChessGame {
     }
 
     return false;
+  }
+
+  getFEN() {
+    const rows = [];
+    for (let row = 0; row < 8; row += 1) {
+      let emptyCount = 0;
+      let notation = '';
+      for (let col = 0; col < 8; col += 1) {
+        const piece = this.board[coordToIndex(row, col)];
+        if (!piece) {
+          emptyCount += 1;
+        } else {
+          if (emptyCount > 0) {
+            notation += emptyCount;
+            emptyCount = 0;
+          }
+          notation += pieceToFenChar(piece);
+        }
+      }
+      if (emptyCount > 0) {
+        notation += emptyCount;
+      }
+      rows.push(notation);
+    }
+
+    const boardPart = rows.join('/');
+    const activeColor = this.currentPlayer === PieceColor.WHITE ? 'w' : 'b';
+    const castling = this.computeCastlingRights();
+    const enPassantSquare = this.enPassantTarget ? squareName(this.enPassantTarget.index) : '-';
+    return `${boardPart} ${activeColor} ${castling} ${enPassantSquare} ${this.halfmoveClock} ${this.fullmoveNumber}`;
+  }
+
+  computeCastlingRights() {
+    const rights = [];
+
+    const whiteKing = this.board[coordToIndex(7, 4)];
+    if (whiteKing && whiteKing.color === PieceColor.WHITE && !whiteKing.hasMoved) {
+      const whiteKingRook = this.board[coordToIndex(7, 7)];
+      if (whiteKingRook && whiteKingRook.color === PieceColor.WHITE && !whiteKingRook.hasMoved) {
+        rights.push('K');
+      }
+      const whiteQueenRook = this.board[coordToIndex(7, 0)];
+      if (whiteQueenRook && whiteQueenRook.color === PieceColor.WHITE && !whiteQueenRook.hasMoved) {
+        rights.push('Q');
+      }
+    }
+
+    const blackKing = this.board[coordToIndex(0, 4)];
+    if (blackKing && blackKing.color === PieceColor.BLACK && !blackKing.hasMoved) {
+      const blackKingRook = this.board[coordToIndex(0, 7)];
+      if (blackKingRook && blackKingRook.color === PieceColor.BLACK && !blackKingRook.hasMoved) {
+        rights.push('k');
+      }
+      const blackQueenRook = this.board[coordToIndex(0, 0)];
+      if (blackQueenRook && blackQueenRook.color === PieceColor.BLACK && !blackQueenRook.hasMoved) {
+        rights.push('q');
+      }
+    }
+
+    return rights.length > 0 ? rights.join('') : '-';
   }
 
   createHistoryEntry({

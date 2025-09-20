@@ -7,28 +7,34 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app">
-      <header class="hud">
-        <h1>WebGPU 3D Chess</h1>
-        <div class="status-panel">
-          <div id="turn-indicator" class="status">Current turn: White</div>
-          <div id="check-indicator" class="status"></div>
-          <div class="controls">
-            <button id="reset-btn" type="button">Reset Game</button>
-            <span class="hint">
-              Click or tap to select pieces. Drag with the right mouse button or a single
-              finger to orbit, use two fingers to pan, and pinch to zoom.
-            </span>
+    <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite">
+      <div class="loading-panel">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Preparing the board...</p>
+      </div>
+    </div>
+    <canvas id="gpu-canvas" width="1280" height="720"></canvas>
+    <div class="ui-overlay" aria-live="polite">
+      <div class="hud">
+        <div class="status-group">
+          <span id="turn-indicator" class="turn">Loading…</span>
+          <span id="check-indicator" class="message"></span>
+        </div>
+        <div class="control-group">
+          <button id="path-toggle" type="button" aria-pressed="false">Enable Path Tracing</button>
+          <button id="reset-btn" type="button">Reset Game</button>
+        </div>
+      </div>
+      <div class="move-log" aria-label="Move history">
+        <div class="log-header">
+          <span>Moves</span>
+          <div id="engine-indicator" class="engine-indicator" aria-hidden="true">
+            <span class="dot" aria-hidden="true"></span>
+            <span>Stockfish thinking…</span>
           </div>
         </div>
-      </header>
-      <main>
-        <canvas id="gpu-canvas" width="1280" height="720"></canvas>
-      </main>
-      <aside class="sidebar">
-        <h2>Move History</h2>
         <ol id="move-history"></ol>
-      </aside>
+      </div>
     </div>
     <script type="module" src="src/main.js"></script>
   </body>

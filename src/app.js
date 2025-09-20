@@ -3,6 +3,7 @@ import { Renderer } from './graphics/renderer.js';
 import { PathTracer } from './graphics/pathTracer.js';
 import { CameraController } from './camera/cameraController.js';
 import { ChessGame, PieceType, PieceColor } from './game/chessGame.js';
+import { StockfishEngine } from './game/stockfishEngine.js';
 import { mat4 } from './math/mat4.js';
 import { vec3 } from './math/vec3.js';
 
@@ -131,6 +132,15 @@ export class App {
 
     this.boardInstances = [];
 
+    this.engine = null;
+    this.engineReadyPromise = null;
+    this.singlePlayer = true;
+    this.humanColor = PieceColor.WHITE;
+    this.engineColor = PieceColor.BLACK;
+    this.engineSkill = 8;
+    this.engineThinking = false;
+    this.engineMoveTime = 1000;
+
     this.usePathTracer = false;
     this.cameraState = {
       inverseViewProjection: new Float32Array(16),
@@ -184,6 +194,15 @@ export class App {
     this.touchState.lastDistance = null;
   }
 
+  async prepareEngine() {
+    this.engine = new StockfishEngine({
+      skillLevel: this.engineSkill,
+      moveTime: this.engineMoveTime,
+    });
+    await this.engine.initialize();
+    await this.engine.newGame();
+  }
+
   async initialize() {
     const { device, context, format } = await createWebGPUContext(this.canvas);
     this.device = device;
@@ -207,6 +226,21 @@ export class App {
 
     this.attachEventListeners();
     this.handleResize();
+
+    if (this.singlePlayer) {
+      try {
+        this.engineReadyPromise = this.prepareEngine();
+        await this.engineReadyPromise;
+      } catch (error) {
+        console.error('Failed to initialize Stockfish engine', error);
+        this.onMessage?.('Engine unavailable. Two-player mode active.');
+        this.singlePlayer = false;
+        this.engine = null;
+        this.engineReadyPromise = null;
+        this.engineThinking = false;
+        this.emitState();
+      }
+    }
   }
 
   start() {
@@ -222,6 +256,15 @@ export class App {
     this.legalMoves = [];
     this.resetDragState();
     this.clearTouchState();
+    this.engineThinking = false;
+    if (this.engine) {
+      this.engine.stop();
+      this.engineReadyPromise = this.engine
+        .newGame()
+        .catch((error) => {
+          console.error('Failed to reset Stockfish engine', error);
+        });
+    }
     this.updatePieces();
     this.updateHighlights();
     this.updateUI();
@@ -365,16 +408,32 @@ export class App {
     this.pathTracer?.setHighlightInstances(highlightInstances);
   }
 
-  updateUI() {
+  emitState(extra = {}) {
     const state = this.game.getState();
     const winner = state.winner;
     const turnLabel = winner
       ? winner === 'draw'
         ? 'Game over: Draw'
         : `Winner: ${capitalize(winner)}`
-      : `Player to move: ${capitalize(state.currentPlayer)}`;
+      : `${capitalize(state.currentPlayer)} to move`;
     const checkLabel = !winner && state.inCheck ? `${capitalize(state.inCheck)} is in check!` : '';
-    this.onStateChange?.({ turnLabel, checkLabel, history: state.history });
+    this.onStateChange?.({
+      turnLabel,
+      checkLabel,
+      history: state.history,
+      usePathTracer: this.usePathTracer,
+      engineThinking: this.engineThinking,
+      singlePlayer: this.singlePlayer,
+      humanColor: this.humanColor,
+      engineColor: this.engineColor,
+      winner,
+      currentPlayer: state.currentPlayer,
+      ...extra,
+    });
+  }
+
+  updateUI(extra = {}) {
+    this.emitState(extra);
   }
 
   updateCameraState(inverseViewProjection, cameraPosition) {
@@ -402,14 +461,26 @@ export class App {
     return changed;
   }
 
+  setPathTracingEnabled(enabled) {
+    if (this.usePathTracer === enabled) {
+      return;
+    }
+    this.usePathTracer = enabled;
+    this.cameraState.valid = false;
+    this.pathTracer?.resetAccumulation();
+    this.emitState();
+  }
+
+  togglePathTracing() {
+    this.setPathTracingEnabled(!this.usePathTracer);
+  }
+
   handleKeyDown(event) {
     if (event.defaultPrevented) return;
     if (event.repeat) return;
     if (event.key?.toLowerCase() !== 'p') return;
     event.preventDefault();
-    this.usePathTracer = !this.usePathTracer;
-    this.cameraState.valid = false;
-    this.pathTracer?.resetAccumulation();
+    this.togglePathTracing();
   }
 
   getTimestamp() {
@@ -551,6 +622,16 @@ export class App {
     return Math.hypot(dx, dy);
   }
 
+  canSelectPieces() {
+    if (!this.singlePlayer) {
+      return true;
+    }
+    if (this.engineThinking) {
+      return false;
+    }
+    return this.game.currentPlayer === this.humanColor;
+  }
+
   handlePointerDown(event) {
     event.preventDefault();
     if (event.pointerType === 'touch') {
@@ -583,7 +664,7 @@ export class App {
         this.initializeMultiTouchGesture();
       }
     } else {
-      if (event.button === 0) {
+      if (event.button === 0 && this.canSelectPieces()) {
         const square = this.pickSquare(event.clientX, event.clientY);
         if (square !== null) {
           this.handleSquareSelection(square);
@@ -659,7 +740,7 @@ export class App {
         }
       }
 
-      if (wasTap) {
+      if (wasTap && this.canSelectPieces()) {
         const square = this.pickSquare(event.clientX, event.clientY);
         if (square !== null) {
           this.handleSquareSelection(square);
@@ -720,25 +801,15 @@ export class App {
   }
 
   handleSquareSelection(squareIndex) {
+    if (!this.canSelectPieces()) {
+      return;
+    }
     if (this.selectedSquare !== null) {
       const move = this.legalMoves.find((m) => m.to === squareIndex);
       if (move) {
         const result = this.game.move(this.selectedSquare, squareIndex);
         if (result.success) {
-          this.selectedSquare = null;
-          this.legalMoves = [];
-          this.updatePieces();
-          this.updateHighlights();
-          this.updateUI();
-          if (result.checkmate) {
-            this.onMessage?.(`Checkmate! ${capitalize(result.winner)} wins.`);
-          } else if (result.stalemate) {
-            this.onMessage?.('Stalemate. The game is a draw.');
-          } else if (result.check) {
-            this.onMessage?.(`${capitalize(result.check)} is in check.`);
-          } else {
-            this.onMessage?.('');
-          }
+          this.processMoveResult(result);
           return;
         }
       }
@@ -753,6 +824,116 @@ export class App {
       this.legalMoves = [];
     }
     this.updateHighlights();
+  }
+
+  processMoveResult(result) {
+    this.selectedSquare = null;
+    this.legalMoves = [];
+    this.hoverSquare = null;
+    this.updatePieces();
+    this.updateHighlights();
+    this.updateUI();
+
+    let message = '';
+    if (result.checkmate) {
+      message = `Checkmate! ${capitalize(result.winner)} wins.`;
+    } else if (result.stalemate) {
+      message = 'Stalemate. The game is a draw.';
+    } else if (result.check) {
+      message = `${capitalize(result.check)} is in check.`;
+    }
+    this.onMessage?.(message);
+    this.pathTracer?.resetAccumulation();
+
+    if (this.singlePlayer) {
+      if (result.movedColor === this.humanColor && !result.checkmate && !result.stalemate && !this.game.winner) {
+        this.requestEngineMove();
+      } else if (result.movedColor === this.engineColor) {
+        this.engineThinking = false;
+        this.emitState();
+      }
+    }
+  }
+
+  parseUCIMove(uci) {
+    if (typeof uci !== 'string' || uci.length < 4) {
+      return null;
+    }
+    const files = 'abcdefgh';
+    const fromFile = files.indexOf(uci[0]);
+    const fromRank = Number.parseInt(uci[1], 10);
+    const toFile = files.indexOf(uci[2]);
+    const toRank = Number.parseInt(uci[3], 10);
+    if (fromFile < 0 || toFile < 0 || Number.isNaN(fromRank) || Number.isNaN(toRank)) {
+      return null;
+    }
+    if (fromRank < 1 || fromRank > 8 || toRank < 1 || toRank > 8) {
+      return null;
+    }
+    const fromRow = 8 - fromRank;
+    const toRow = 8 - toRank;
+    const fromIndex = fromRow * 8 + fromFile;
+    const toIndex = toRow * 8 + toFile;
+    if (fromIndex < 0 || fromIndex >= 64 || toIndex < 0 || toIndex >= 64) {
+      return null;
+    }
+    let promotion = null;
+    if (uci.length >= 5) {
+      const promotionMap = {
+        q: PieceType.QUEEN,
+        r: PieceType.ROOK,
+        b: PieceType.BISHOP,
+        n: PieceType.KNIGHT,
+      };
+      promotion = promotionMap[uci[4].toLowerCase()] ?? null;
+    }
+    return { from: fromIndex, to: toIndex, promotion };
+  }
+
+  async requestEngineMove() {
+    if (!this.singlePlayer || !this.engine) {
+      return;
+    }
+    if (this.game.winner || this.game.currentPlayer !== this.engineColor) {
+      return;
+    }
+    if (this.engineReadyPromise) {
+      try {
+        await this.engineReadyPromise;
+      } catch (error) {
+        console.error('Engine initialization failed', error);
+        this.singlePlayer = false;
+        this.engineThinking = false;
+        this.onMessage?.('Engine unavailable. Two-player mode active.');
+        this.emitState();
+        return;
+      }
+    }
+
+    this.engineThinking = true;
+    this.emitState();
+
+    try {
+      const fen = this.game.getFEN();
+      const move = await this.engine.getBestMove(fen);
+      if (!move) {
+        throw new Error('Engine returned no move');
+      }
+      const parsed = this.parseUCIMove(move);
+      if (!parsed) {
+        throw new Error(`Invalid move string: ${move}`);
+      }
+      const result = this.game.move(parsed.from, parsed.to, parsed.promotion ?? null);
+      if (!result.success) {
+        throw new Error(result.message ?? 'Engine move rejected');
+      }
+      this.processMoveResult(result);
+    } catch (error) {
+      console.error('Stockfish move error', error);
+      this.engineThinking = false;
+      this.emitState();
+      this.onMessage?.('Engine error: unable to make a move.');
+    }
   }
 
   pickSquare(clientX, clientY) {
