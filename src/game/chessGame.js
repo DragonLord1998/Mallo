@@ -72,6 +72,7 @@ export class ChessGame {
     this.nextPieceId = 1;
     this.lastMove = null;
     this.winner = null;
+    this.enPassantTarget = null;
     this.reset();
   }
 
@@ -98,6 +99,7 @@ export class ChessGame {
     this.moveHistory = [];
     this.lastMove = null;
     this.winner = null;
+    this.enPassantTarget = null;
   }
 
   getPieceAt(index) {
@@ -148,15 +150,20 @@ export class ChessGame {
       return { success: false, message: 'Illegal move' };
     }
 
-    const captured = this.board[toIndex];
     const originalType = piece.type;
+    const fromCoord = indexToCoord(fromIndex);
+    const toCoord = indexToCoord(toIndex);
 
-    this.board[toIndex] = piece;
-    this.board[fromIndex] = null;
-    piece.hasMoved = true;
-    if (targetMove.promotion) {
-      piece.type = targetMove.promotion;
-    }
+    const moveState = this.applyMove(fromIndex, targetMove);
+    const capturedPiece = moveState.captured ?? moveState.enPassantCaptured ?? null;
+
+    this.updateEnPassantState({
+      originalType,
+      from: fromCoord,
+      to: toCoord,
+      color: piece.color,
+      move: targetMove,
+    });
 
     const opponent = piece.color === PieceColor.WHITE ? PieceColor.BLACK : PieceColor.WHITE;
     const opponentInCheck = this.isKingInCheck(opponent);
@@ -179,24 +186,34 @@ export class ChessGame {
       color: piece.color,
       fromIndex,
       toIndex,
-      captured,
+      captured: capturedPiece,
       promotion: targetMove.promotion,
       checkmate,
       check: opponentInCheck,
       stalemate,
+      castle: targetMove.castle ? targetMove.castle.side : null,
+      enPassant: Boolean(targetMove.enPassant),
     });
     this.moveHistory.push(historyEntry);
-    this.lastMove = { from: fromIndex, to: toIndex };
+    this.lastMove = {
+      from: fromIndex,
+      to: toIndex,
+      rook: targetMove.castle
+        ? { from: targetMove.castle.rookFrom, to: targetMove.castle.rookTo }
+        : null,
+    };
     this.currentPlayer = opponent;
 
     return {
       success: true,
-      captured,
+      captured: capturedPiece,
       check: opponentInCheck ? opponent : null,
       checkmate,
       stalemate,
       historyEntry,
       winner: this.winner,
+      castle: targetMove.castle ?? null,
+      enPassant: Boolean(targetMove.enPassant),
     };
   }
 
@@ -224,26 +241,99 @@ export class ChessGame {
   }
 
   moveLeavesKingInCheck(color, fromIndex, move) {
+    const moveState = this.applyMove(fromIndex, move);
+    const inCheck = this.isKingInCheck(color);
+    this.undoMove(moveState);
+    return inCheck;
+  }
+
+  applyMove(fromIndex, move) {
     const piece = this.board[fromIndex];
-    const captured = this.board[move.to];
-    const prevHasMoved = piece.hasMoved;
-    const prevType = piece.type;
+    if (!piece) {
+      throw new Error('No piece to move');
+    }
+
+    const moveState = {
+      piece,
+      from: fromIndex,
+      to: move.to,
+      captured: null,
+      enPassantCaptured: null,
+      enPassantCaptureIndex: move.enPassant ? move.enPassantCapture : null,
+      promotion: move.promotion ?? null,
+      originalType: piece.type,
+      originalHasMoved: piece.hasMoved,
+      rookMove: null,
+    };
+
+    this.board[fromIndex] = null;
+
+    if (move.castle) {
+      const rook = this.board[move.castle.rookFrom];
+      moveState.rookMove = {
+        piece: rook ?? null,
+        from: move.castle.rookFrom,
+        to: move.castle.rookTo,
+        originalHasMoved: rook ? rook.hasMoved : false,
+      };
+      if (rook) {
+        this.board[move.castle.rookFrom] = null;
+        this.board[move.castle.rookTo] = rook;
+        rook.hasMoved = true;
+      }
+    }
+
+    if (move.enPassant) {
+      moveState.enPassantCaptured = this.board[move.enPassantCapture] ?? null;
+      if (moveState.enPassantCaptureIndex !== null) {
+        this.board[moveState.enPassantCaptureIndex] = null;
+      }
+    } else {
+      moveState.captured = this.board[move.to] ?? null;
+    }
 
     this.board[move.to] = piece;
-    this.board[fromIndex] = null;
     piece.hasMoved = true;
     if (move.promotion) {
       piece.type = move.promotion;
     }
 
-    const inCheck = this.isKingInCheck(color);
+    return moveState;
+  }
 
-    this.board[fromIndex] = piece;
-    this.board[move.to] = captured;
-    piece.hasMoved = prevHasMoved;
-    piece.type = prevType;
+  undoMove(moveState) {
+    const { piece } = moveState;
+    this.board[moveState.to] = moveState.captured;
+    this.board[moveState.from] = piece;
+    piece.hasMoved = moveState.originalHasMoved;
+    if (moveState.promotion) {
+      piece.type = moveState.originalType;
+    }
 
-    return inCheck;
+    if (moveState.enPassantCaptured && moveState.enPassantCaptureIndex !== null) {
+      this.board[moveState.enPassantCaptureIndex] = moveState.enPassantCaptured;
+    }
+
+    if (moveState.rookMove && moveState.rookMove.piece) {
+      this.board[moveState.rookMove.to] = null;
+      this.board[moveState.rookMove.from] = moveState.rookMove.piece;
+      moveState.rookMove.piece.hasMoved = moveState.rookMove.originalHasMoved;
+    }
+  }
+
+  updateEnPassantState({ originalType, from, to, color, move }) {
+    this.enPassantTarget = null;
+    if (originalType !== PieceType.PAWN) {
+      return;
+    }
+    const rowDelta = to.row - from.row;
+    if (Math.abs(rowDelta) !== 2 || move.enPassant) {
+      return;
+    }
+    const midRow = (from.row + to.row) / 2;
+    const targetIndex = coordToIndex(midRow, from.col);
+    const captureColor = color === PieceColor.WHITE ? PieceColor.BLACK : PieceColor.WHITE;
+    this.enPassantTarget = { index: targetIndex, captureColor };
   }
 
   generatePseudoMoves(index, piece) {
@@ -267,14 +357,37 @@ export class ChessGame {
           const targetCol = col + offset;
           const targetRow = row + direction;
           if (!isOnBoard(targetRow, targetCol)) continue;
-          const targetPiece = this.board[coordToIndex(targetRow, targetCol)];
+          const targetIndex = coordToIndex(targetRow, targetCol);
+          const targetPiece = this.board[targetIndex];
           if (targetPiece && targetPiece.color !== piece.color) {
             const promotion = targetRow === 0 || targetRow === 7 ? PieceType.QUEEN : null;
             moves.push({
               from: index,
-              to: coordToIndex(targetRow, targetCol),
+              to: targetIndex,
               promotion,
             });
+            continue;
+          }
+
+          if (
+            this.enPassantTarget &&
+            this.enPassantTarget.captureColor === piece.color &&
+            this.enPassantTarget.index === targetIndex
+          ) {
+            const captureIndex = coordToIndex(row, targetCol);
+            const capturedPawn = this.board[captureIndex];
+            if (
+              capturedPawn &&
+              capturedPawn.color !== piece.color &&
+              capturedPawn.type === PieceType.PAWN
+            ) {
+              moves.push({
+                from: index,
+                to: targetIndex,
+                enPassant: true,
+                enPassantCapture: captureIndex,
+              });
+            }
           }
         }
         break;
@@ -345,6 +458,7 @@ export class ChessGame {
             }
           }
         }
+        this.generateCastlingMoves(moves, index, piece, row, col);
         break;
       }
       default:
@@ -372,6 +486,89 @@ export class ChessGame {
         nr += dr;
         nc += dc;
       }
+    }
+  }
+
+  generateCastlingMoves(moves, index, piece, row, col) {
+    if (piece.hasMoved) {
+      return;
+    }
+    const opponentColor = piece.color === PieceColor.WHITE ? PieceColor.BLACK : PieceColor.WHITE;
+    if (this.isSquareAttacked(index, opponentColor)) {
+      return;
+    }
+
+    const options = [
+      {
+        side: 'king',
+        rookCol: 7,
+        path: [col + 1, col + 2],
+        kingPath: [col + 1, col + 2],
+        finalCol: col + 2,
+        rookTargetCol: col + 1,
+      },
+      {
+        side: 'queen',
+        rookCol: 0,
+        path: [col - 1, col - 2, col - 3],
+        kingPath: [col - 1, col - 2],
+        finalCol: col - 2,
+        rookTargetCol: col - 1,
+      },
+    ];
+
+    for (const option of options) {
+      if (option.finalCol < 0 || option.finalCol > 7) {
+        continue;
+      }
+
+      const rookIndex = coordToIndex(row, option.rookCol);
+      const rook = this.board[rookIndex];
+      if (!rook || rook.type !== PieceType.ROOK || rook.color !== piece.color || rook.hasMoved) {
+        continue;
+      }
+
+      let pathClear = true;
+      for (const pathCol of option.path) {
+        if (!isOnBoard(row, pathCol)) {
+          pathClear = false;
+          break;
+        }
+        const pathIndex = coordToIndex(row, pathCol);
+        if (this.board[pathIndex]) {
+          pathClear = false;
+          break;
+        }
+      }
+      if (!pathClear) {
+        continue;
+      }
+
+      let safe = true;
+      for (const kingCol of option.kingPath) {
+        if (!isOnBoard(row, kingCol)) {
+          safe = false;
+          break;
+        }
+        const kingIndex = coordToIndex(row, kingCol);
+        if (this.isSquareAttacked(kingIndex, opponentColor)) {
+          safe = false;
+          break;
+        }
+      }
+      if (!safe) {
+        continue;
+      }
+
+      moves.push({
+        from: index,
+        to: coordToIndex(row, option.finalCol),
+        castle: {
+          side: option.side,
+          rookFrom: rookIndex,
+          rookTo: coordToIndex(row, option.rookTargetCol),
+        },
+      });
     }
   }
 
@@ -484,13 +681,38 @@ export class ChessGame {
     return false;
   }
 
-  createHistoryEntry({ pieceType, color, fromIndex, toIndex, captured, promotion, check, checkmate, stalemate }) {
+  createHistoryEntry({
+    pieceType,
+    color,
+    fromIndex,
+    toIndex,
+    captured,
+    promotion,
+    check,
+    checkmate,
+    stalemate,
+    castle,
+    enPassant,
+  }) {
     const player = capitalize(color);
+    if (castle) {
+      const notation = castle === 'king' ? 'O-O' : 'O-O-O';
+      let suffix = '';
+      if (checkmate) {
+        suffix = ' #';
+      } else if (check) {
+        suffix = ' +';
+      } else if (stalemate) {
+        suffix = ' =';
+      }
+      return `${player}: ${notation}${suffix}`;
+    }
     const pieceLetter = PIECE_TO_LETTER[pieceType];
     const from = squareName(fromIndex);
     const to = squareName(toIndex);
     const action = captured ? 'x' : '→';
     const promotionSuffix = promotion ? `=${PIECE_TO_LETTER[promotion]}` : '';
+    const enPassantSuffix = enPassant ? ' (e.p.)' : '';
     let suffix = '';
     if (checkmate) {
       suffix = ' #';
@@ -499,7 +721,7 @@ export class ChessGame {
     } else if (stalemate) {
       suffix = ' =';
     }
-    return `${player}: ${pieceLetter}${from} ${action} ${to}${promotionSuffix}${suffix}`;
+    return `${player}: ${pieceLetter}${from} ${action} ${to}${promotionSuffix}${enPassantSuffix}${suffix}`;
   }
 }
 
