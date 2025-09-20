@@ -206,15 +206,16 @@ fn main(@builtin(global_invocation_id) globalId : vec3<u32>) {
   let pixel = vec2<f32>(f32(globalId.x), f32(globalId.y)) + jitter;
   let resolution = scene.resolution;
   let uv = vec2<f32>(pixel.x / resolution.x, pixel.y / resolution.y);
-  let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  let ndc = vec2<f32>(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);
 
-  let nearPoint4 = scene.invViewProj * vec4<f32>(ndc, -1.0, 1.0);
   let farPoint4 = scene.invViewProj * vec4<f32>(ndc, 1.0, 1.0);
-  let nearPoint = nearPoint4.xyz / nearPoint4.w;
   let farPoint = farPoint4.xyz / farPoint4.w;
 
-  var origin = nearPoint;
-  var direction = normalize(farPoint - nearPoint);
+  var origin = scene.cameraPos;
+  var direction = normalize(farPoint - origin);
+
+  // Offset the ray a little forward to avoid self-intersections with the near plane.
+  origin += direction * 0.01;
 
   var throughput = vec3<f32>(1.0);
   var radiance = vec3<f32>(0.0);

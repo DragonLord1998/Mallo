@@ -78,8 +78,11 @@ export class PathTracer {
   }
 
   async initialize() {
+    const shaderRevision = '20240209a';
     const computeShaderUrl = new URL('../shaders/pathtrace.wgsl', import.meta.url);
     const presentShaderUrl = new URL('../shaders/fullscreen.wgsl', import.meta.url);
+    computeShaderUrl.searchParams.set('rev', shaderRevision);
+    presentShaderUrl.searchParams.set('rev', shaderRevision);
 
     const [computeCode, presentCode] = await Promise.all([
       fetch(computeShaderUrl).then((res) => res.text()),
