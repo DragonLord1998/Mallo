@@ -1,6 +1,4 @@
-import { createWebGPUContext } from '../../webgpu/context.js';
 import { Renderer } from './graphics/renderer.js';
-import { PathTracer } from './graphics/pathTracer.js';
 import { CameraController } from './camera/cameraController.js';
 import { ChessGame, PieceType, PieceColor } from './game/chessGame.js';
 import { StockfishEngine } from './game/stockfishEngine.js';
@@ -123,12 +121,7 @@ export class App {
     this.running = false;
 
     this.renderer = null;
-    this.pathTracer = null;
     this.camera = null;
-
-    this.device = null;
-    this.context = null;
-    this.format = null;
 
     this.boardInstances = [];
 
@@ -140,13 +133,6 @@ export class App {
     this.engineSkill = 8;
     this.engineThinking = false;
     this.engineMoveTime = 1000;
-
-    this.usePathTracer = false;
-    this.cameraState = {
-      inverseViewProjection: new Float32Array(16),
-      position: new Float32Array(3),
-      valid: false,
-    };
 
     this.cameraInteraction = {
       active: false,
@@ -215,16 +201,9 @@ export class App {
   }
 
   async initialize() {
-    const { device, context, format } = await createWebGPUContext(this.canvas);
-    this.device = device;
-    this.context = context;
-    this.format = format;
-
-    this.renderer = new Renderer({ device, context, format, canvas: this.canvas });
+    this.renderer = new Renderer({ canvas: this.canvas });
     await this.renderer.initialize();
-
-    this.pathTracer = new PathTracer({ device, context, format, canvas: this.canvas });
-    await this.pathTracer.initialize();
+    this.renderer.setLightDirection(lightDirection);
 
     this.camera = new CameraController({ canvas: this.canvas, target: [0, 1.0, 0], radius: 12 });
     this.cameraInteraction.currentAnchor = this.camera.getNearestAnchorIndex();
@@ -232,7 +211,6 @@ export class App {
 
     this.boardInstances = this.buildBoardInstances();
     this.renderer.setBoardInstances(this.boardInstances);
-    this.pathTracer.setBoardInstances(this.boardInstances);
     this.updatePieces();
     this.updateHighlights();
     this.updateUI();
@@ -283,7 +261,6 @@ export class App {
     this.updateHighlights();
     this.updateUI();
     this.onMessage?.('');
-    this.pathTracer?.resetAccumulation();
   }
 
   attachEventListeners() {
@@ -310,15 +287,8 @@ export class App {
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
       this.canvas.height = height;
-      this.context.configure({
-        device: this.device,
-        format: this.format,
-        alphaMode: 'opaque',
-      });
       this.renderer.resize(width, height);
-      this.pathTracer?.resize(width, height);
       this.camera.updateProjection(width / height);
-      this.pathTracer?.resetAccumulation();
     }
   }
 
@@ -338,27 +308,10 @@ export class App {
 
     this.camera.update(deltaSeconds);
 
-    const viewProjection = this.camera.getViewProjectionMatrix();
     const cameraPosition = this.camera.getCameraPosition();
-    const inverseViewProjection = this.camera.getInverseViewProjectionMatrix();
-    this.renderer.updateScene({
-      viewProjection,
-      cameraPosition,
-      lightDirection,
-    });
-    if (this.usePathTracer && this.pathTracer) {
-      if (this.updateCameraState(inverseViewProjection, cameraPosition)) {
-        this.pathTracer.resetAccumulation();
-      }
-      this.pathTracer.updateScene({
-        inverseViewProjection,
-        cameraPosition,
-        lightDirection,
-      });
-      this.pathTracer.render();
-    } else {
-      this.renderer.render();
-    }
+    const cameraTarget = this.camera.getTarget();
+    this.renderer.updateCamera({ position: cameraPosition, target: cameraTarget });
+    this.renderer.render();
     requestAnimationFrame(this.renderFrame);
   }
 
@@ -394,7 +347,6 @@ export class App {
       }
     }
     this.renderer.updatePieceInstances(instances);
-    this.pathTracer?.updatePieceInstances(instances);
   }
 
   updateHighlights() {
@@ -432,7 +384,6 @@ export class App {
     }
 
     this.renderer.setHighlightInstances(highlightInstances);
-    this.pathTracer?.setHighlightInstances(highlightInstances);
   }
 
   emitState(extra = {}) {
@@ -448,7 +399,6 @@ export class App {
       turnLabel,
       checkLabel,
       history: state.history,
-      usePathTracer: this.usePathTracer,
       engineThinking: this.engineThinking,
       singlePlayer: this.singlePlayer,
       humanColor: this.humanColor,
@@ -463,51 +413,8 @@ export class App {
     this.emitState(extra);
   }
 
-  updateCameraState(inverseViewProjection, cameraPosition) {
-    const state = this.cameraState;
-    let changed = !state.valid;
-    if (!changed) {
-      for (let i = 0; i < 16; i += 1) {
-        if (Math.abs(state.inverseViewProjection[i] - inverseViewProjection[i]) > 1e-4) {
-          changed = true;
-          break;
-        }
-      }
-    }
-    if (!changed) {
-      for (let i = 0; i < 3; i += 1) {
-        if (Math.abs(state.position[i] - cameraPosition[i]) > 1e-4) {
-          changed = true;
-          break;
-        }
-      }
-    }
-    state.inverseViewProjection.set(inverseViewProjection);
-    state.position.set(cameraPosition);
-    state.valid = true;
-    return changed;
-  }
-
-  setPathTracingEnabled(enabled) {
-    if (this.usePathTracer === enabled) {
-      return;
-    }
-    this.usePathTracer = enabled;
-    this.cameraState.valid = false;
-    this.pathTracer?.resetAccumulation();
-    this.emitState();
-  }
-
-  togglePathTracing() {
-    this.setPathTracingEnabled(!this.usePathTracer);
-  }
-
   handleKeyDown(event) {
     if (event.defaultPrevented) return;
-    if (event.repeat) return;
-    if (event.key?.toLowerCase() !== 'p') return;
-    event.preventDefault();
-    this.togglePathTracing();
   }
 
   getTimestamp() {
@@ -957,7 +864,6 @@ export class App {
       message = `${capitalize(result.check)} is in check.`;
     }
     this.onMessage?.(message);
-    this.pathTracer?.resetAccumulation();
 
     if (this.singlePlayer) {
       if (result.movedColor === this.humanColor && !result.checkmate && !result.stalemate && !this.game.winner) {

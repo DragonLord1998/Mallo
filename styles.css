@@ -283,6 +283,92 @@ body {
   background: #05070d;
 }
 
+.neon-garden {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 30% 20%, rgba(32, 61, 140, 0.4), rgba(3, 5, 13, 0.95)),
+    radial-gradient(circle at 70% 80%, rgba(170, 45, 178, 0.45), rgba(3, 6, 15, 0.92));
+  overflow: hidden;
+  z-index: 15;
+}
+
+.neon-garden canvas {
+  width: min(1100px, 90vw);
+  height: min(620px, 70vh);
+  border-radius: 24px;
+  background: rgba(4, 8, 20, 0.92);
+  box-shadow: 0 45px 120px rgba(2, 6, 18, 0.65), inset 0 0 90px rgba(12, 40, 72, 0.35);
+}
+
+.neon-ui {
+  position: absolute;
+  bottom: clamp(1rem, 3vw, 2rem);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: center;
+  color: rgba(217, 236, 255, 0.88);
+  text-shadow: 0 0 12px rgba(53, 205, 255, 0.55);
+}
+
+.neon-status {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  background: rgba(6, 12, 28, 0.68);
+  border: 1px solid rgba(111, 221, 255, 0.35);
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  backdrop-filter: blur(14px);
+}
+
+.neon-title {
+  font-size: 0.9rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+#neon-reset,
+#neon-exit {
+  border: 1px solid rgba(102, 214, 255, 0.45);
+  background: linear-gradient(135deg, rgba(60, 194, 255, 0.45), rgba(189, 78, 255, 0.45));
+  color: #e9f6ff;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+#neon-exit {
+  background: linear-gradient(135deg, rgba(52, 90, 180, 0.45), rgba(62, 210, 240, 0.35));
+}
+
+.neon-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.neon-slider input[type='range'] {
+  width: 120px;
+  accent-color: #5ad8ff;
+}
+
+.neon-tips {
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(190, 220, 255, 0.65);
+}
+
 .ui-overlay {
   position: fixed;
   inset: 0;

@@ -254,6 +254,10 @@ export class CameraController {
     return this.cameraPosition;
   }
 
+  getTarget() {
+    return this.target;
+  }
+
   isSettled({ angleThreshold = 0.01, radiusThreshold = 0.02, positionThreshold = 0.02 } = {}) {
     const thetaDiff = Math.abs(normalizeAngle(this.theta - this.targetTheta));
     const phiDiff = Math.abs(this.phi - this.targetPhi);

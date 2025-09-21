@@ -35,15 +35,15 @@
             </div>
             <span class="card-cta" aria-hidden="true">Launch</span>
           </button>
-          <article class="launcher-card is-coming-soon" role="listitem" aria-disabled="true" data-categories="realtime">
+          <button class="launcher-card" role="listitem" type="button" data-app="neon" data-categories="realtime">
             <span class="card-media" aria-hidden="true">🌌</span>
             <div class="card-text">
               <span class="card-eyebrow">Realtime</span>
               <span class="card-title">Neon Garden</span>
-              <span class="card-description">Procedural foliage sculpted with light — coming soon.</span>
+              <span class="card-description">Procedural foliage sculpted with light — explore the bloom.</span>
             </div>
-            <span class="card-cta">Coming Soon</span>
-          </article>
+            <span class="card-cta">Launch</span>
+          </button>
           <article class="launcher-card is-coming-soon" role="listitem" aria-disabled="true" data-categories="tools">
             <span class="card-media" aria-hidden="true">🎛️</span>
             <div class="card-text">
@@ -71,6 +71,21 @@
       </div>
     </div>
     <canvas id="gpu-canvas" width="1280" height="720" class="is-hidden"></canvas>
+    <div id="neon-garden" class="neon-garden is-hidden" aria-hidden="true">
+      <canvas id="neon-canvas"></canvas>
+      <div class="neon-ui">
+        <div class="neon-status">
+          <span class="neon-title">Neon Garden</span>
+          <button id="neon-exit" type="button">Back</button>
+          <button id="neon-reset" type="button">Reset Bloom</button>
+          <label class="neon-slider">
+            Growth
+            <input id="neon-growth" type="range" min="0" max="1" step="0.01" value="0.5" />
+          </label>
+        </div>
+        <div class="neon-tips">Drag to paint light. Toggle growth to sculpt the garden.</div>
+      </div>
+    </div>
     <div class="ui-overlay is-hidden" aria-live="polite">
       <div class="hud">
         <div class="status-group">
@@ -78,7 +93,6 @@
           <span id="check-indicator" class="message"></span>
         </div>
         <div class="control-group">
-          <button id="path-toggle" type="button" aria-pressed="false">Enable Path Tracing</button>
           <button id="reset-btn" type="button">Reset Game</button>
         </div>
       </div>
@@ -102,6 +116,7 @@
         <ol id="move-history"></ol>
       </div>
     </div>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
     <script type="module" src="src/main.js"></script>
   </body>
 </html>

@@ -1,271 +1,162 @@
-import { createCubeGeometry } from './geometry.js';
+const BABYLON = globalThis.BABYLON;
 
-const INSTANCE_FLOATS = 19;
-const INSTANCE_STRIDE = INSTANCE_FLOATS * 4;
-
-function createBuffer(device, data, usage) {
-  const buffer = device.createBuffer({
-    size: data.byteLength,
-    usage,
-    mappedAtCreation: true,
-  });
-  new Float32Array(buffer.getMappedRange()).set(data);
-  buffer.unmap();
-  return buffer;
-}
-
-function ensureInstanceBuffer(device, info, instanceCount) {
-  const requiredSize = Math.max(1, instanceCount) * INSTANCE_STRIDE;
-  if (!info.buffer || info.capacity < requiredSize) {
-    info.buffer?.destroy?.();
-    info.buffer = device.createBuffer({
-      size: requiredSize,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    info.capacity = requiredSize;
-  }
-  info.count = instanceCount;
-}
-
-function packInstances(instances) {
-  const data = new Float32Array(instances.length * INSTANCE_FLOATS);
-  let offset = 0;
-  for (const instance of instances) {
-    data.set(instance.matrix, offset);
-    offset += 16;
-    const color = instance.color ?? [1, 1, 1];
-    data.set(color, offset);
-    offset += 3;
-  }
-  return data;
+function getColorKey(color = [1, 1, 1]) {
+  return color.map((component) => component.toFixed(4)).join(',');
 }
 
 export class Renderer {
-  constructor({ device, context, format, canvas }) {
-    this.device = device;
-    this.context = context;
-    this.format = format;
+  constructor({ canvas }) {
+    if (!canvas) {
+      throw new Error('Renderer requires a canvas element.');
+    }
+
     this.canvas = canvas;
+    this.engine = null;
+    this.scene = null;
+    this.camera = null;
+    this.light = null;
 
-    this.sceneUniformBuffer = null;
-    this.sceneBindGroup = null;
-    this.pipeline = null;
+    this.groups = {
+      board: { root: null, meshes: [] },
+      highlights: { root: null, meshes: [] },
+      pieces: { root: null, meshes: [] },
+    };
 
-    this.vertexBuffer = null;
-    this.vertexCount = 0;
-
-    this.boardInstances = { buffer: null, capacity: 0, count: 0 };
-    this.highlightInstances = { buffer: null, capacity: 0, count: 0 };
-    this.pieceInstances = { buffer: null, capacity: 0, count: 0 };
-
-    this.sceneUniformData = new Float32Array(24);
-    this.depthTexture = null;
-    this.depthTextureView = null;
-    this.depthFormat = 'depth24plus';
+    this.materialCache = new Map();
+    this._tempScaling = null;
+    this._tempRotation = null;
+    this._tempPosition = null;
+    this._cameraTarget = null;
   }
 
   async initialize() {
-    const shaderUrl = new URL('../shaders/solid.wgsl', import.meta.url);
-    const shaderCode = await fetch(shaderUrl).then((res) => res.text());
-    const shaderModule = this.device.createShaderModule({
-      code: shaderCode,
-    });
-
-    const { vertexData, vertexCount } = createCubeGeometry();
-    this.vertexBuffer = createBuffer(
-      this.device,
-      vertexData,
-      GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    );
-    this.vertexCount = vertexCount;
-
-    this.sceneUniformBuffer = this.device.createBuffer({
-      size: this.sceneUniformData.byteLength,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    const sceneBindGroupLayout = this.device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: 'uniform' },
-        },
-      ],
-    });
-
-    this.sceneBindGroup = this.device.createBindGroup({
-      layout: sceneBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: { buffer: this.sceneUniformBuffer },
-        },
-      ],
-    });
-
-    const pipelineLayout = this.device.createPipelineLayout({
-      bindGroupLayouts: [sceneBindGroupLayout],
-    });
-
-    this.pipeline = this.device.createRenderPipeline({
-      layout: pipelineLayout,
-      vertex: {
-        module: shaderModule,
-        entryPoint: 'vs_main',
-        buffers: [
-          {
-            arrayStride: 24,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x3' },
-              { shaderLocation: 1, offset: 12, format: 'float32x3' },
-            ],
-          },
-          {
-            arrayStride: INSTANCE_STRIDE,
-            stepMode: 'instance',
-            attributes: [
-              { shaderLocation: 2, offset: 0, format: 'float32x4' },
-              { shaderLocation: 3, offset: 16, format: 'float32x4' },
-              { shaderLocation: 4, offset: 32, format: 'float32x4' },
-              { shaderLocation: 5, offset: 48, format: 'float32x4' },
-              { shaderLocation: 6, offset: 64, format: 'float32x3' },
-            ],
-          },
-        ],
-      },
-      fragment: {
-        module: shaderModule,
-        entryPoint: 'fs_main',
-        targets: [
-          {
-            format: this.format,
-          },
-        ],
-      },
-      primitive: {
-        topology: 'triangle-list',
-        cullMode: 'back',
-      },
-      depthStencil: {
-        format: this.depthFormat,
-        depthWriteEnabled: true,
-        depthCompare: 'less',
-      },
-    });
-
-    this.resize(this.canvas.width, this.canvas.height);
-  }
-
-  resize(width, height) {
-    if (width === 0 || height === 0) {
-      return;
+    if (!BABYLON) {
+      throw new Error('Babylon.js is not available. Ensure the Babylon.js CDN script is loaded.');
     }
 
-    this.depthTexture?.destroy?.();
-    this.depthTexture = this.device.createTexture({
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: this.depthFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    this.depthTextureView = this.depthTexture.createView();
+    this.engine = new BABYLON.Engine(this.canvas, true, { adaptToDeviceRatio: false });
+    this.scene = new BABYLON.Scene(this.engine);
+    this.scene.useRightHandedSystem = true;
+    this.scene.clearColor = new BABYLON.Color4(0.05, 0.07, 0.12, 1.0);
+
+    this.camera = new BABYLON.FreeCamera('chess-camera', new BABYLON.Vector3(0, 10, 10), this.scene);
+    this.camera.minZ = 0.1;
+    this.camera.maxZ = 100;
+    this.camera.fov = Math.PI / 4;
+    this.camera.inertia = 0;
+    this.camera.position.copyFromFloats(0, 8, 8);
+    this.camera.setTarget(BABYLON.Vector3.Zero());
+
+    this.light = new BABYLON.DirectionalLight('chess-light', new BABYLON.Vector3(-0.6, -1.0, -0.8), this.scene);
+    this.light.position = new BABYLON.Vector3(6, 8, 6);
+    this.light.intensity = 1.25;
+
+    const hemiLight = new BABYLON.HemisphericLight('chess-hemi', new BABYLON.Vector3(0, 1, 0), this.scene);
+    hemiLight.intensity = 0.35;
+    hemiLight.specular = new BABYLON.Color3(0.05, 0.05, 0.05);
+
+    this.groups.board.root = new BABYLON.TransformNode('board-root', this.scene);
+    this.groups.highlights.root = new BABYLON.TransformNode('highlight-root', this.scene);
+    this.groups.pieces.root = new BABYLON.TransformNode('piece-root', this.scene);
+
+    this._tempScaling = new BABYLON.Vector3(1, 1, 1);
+    this._tempRotation = new BABYLON.Quaternion();
+    this._tempPosition = new BABYLON.Vector3();
+    this._cameraTarget = new BABYLON.Vector3();
   }
 
-  updateScene({ viewProjection, cameraPosition, lightDirection }) {
-    this.sceneUniformData.set(viewProjection, 0);
-    this.sceneUniformData[16] = lightDirection[0];
-    this.sceneUniformData[17] = lightDirection[1];
-    this.sceneUniformData[18] = lightDirection[2];
-    this.sceneUniformData[19] = 0;
-    this.sceneUniformData[20] = cameraPosition[0];
-    this.sceneUniformData[21] = cameraPosition[1];
-    this.sceneUniformData[22] = cameraPosition[2];
-    this.sceneUniformData[23] = 1;
-    this.device.queue.writeBuffer(
-      this.sceneUniformBuffer,
-      0,
-      this.sceneUniformData.buffer,
-      this.sceneUniformData.byteOffset,
-      this.sceneUniformData.byteLength,
-    );
+  setLightDirection(direction) {
+    if (!this.light || !direction) return;
+    this.light.direction.copyFromFloats(direction[0], direction[1], direction[2]);
+  }
+
+  updateCamera({ position, target }) {
+    if (!this.camera || !position || !target) {
+      return;
+    }
+    this.camera.position.copyFromFloats(position[0], position[1], position[2]);
+    this._cameraTarget.copyFromFloats(target[0], target[1], target[2]);
+    this.camera.setTarget(this._cameraTarget);
   }
 
   setBoardInstances(instances) {
-    ensureInstanceBuffer(this.device, this.boardInstances, instances.length);
-    const data = packInstances(instances);
-    this.device.queue.writeBuffer(
-      this.boardInstances.buffer,
-      0,
-      data.buffer,
-      data.byteOffset,
-      data.byteLength,
-    );
+    this.#syncGroup(this.groups.board, instances, 'board');
   }
 
   setHighlightInstances(instances) {
-    ensureInstanceBuffer(this.device, this.highlightInstances, instances.length);
-    const data = packInstances(instances);
-    this.device.queue.writeBuffer(
-      this.highlightInstances.buffer,
-      0,
-      data.buffer,
-      data.byteOffset,
-      data.byteLength,
-    );
+    this.#syncGroup(this.groups.highlights, instances, 'highlight');
   }
 
   updatePieceInstances(instances) {
-    ensureInstanceBuffer(this.device, this.pieceInstances, instances.length);
-    const data = packInstances(instances);
-    this.device.queue.writeBuffer(
-      this.pieceInstances.buffer,
-      0,
-      data.buffer,
-      data.byteOffset,
-      data.byteLength,
-    );
+    this.#syncGroup(this.groups.pieces, instances, 'piece');
   }
 
   render() {
-    const commandEncoder = this.device.createCommandEncoder();
-    const textureView = this.context.getCurrentTexture().createView();
-    const renderPass = commandEncoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: textureView,
-          clearValue: { r: 0.05, g: 0.07, b: 0.12, a: 1.0 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-      depthStencilAttachment: {
-        view: this.depthTextureView,
-        depthClearValue: 1.0,
-        depthLoadOp: 'clear',
-        depthStoreOp: 'store',
-      },
+    if (!this.scene || !this.engine) return;
+    this.scene.render();
+  }
+
+  resize(width, height) {
+    if (!this.engine) return;
+    if (typeof width === 'number' && typeof height === 'number') {
+      this.engine.setSize(width, height);
+    } else {
+      this.engine.resize();
+    }
+  }
+
+  #syncGroup(group, instances, prefix) {
+    if (!this.scene || !group?.root) {
+      return;
+    }
+
+    group.meshes.forEach((mesh) => mesh.dispose());
+    group.meshes = [];
+
+    if (!Array.isArray(instances) || instances.length === 0) {
+      return;
+    }
+
+    instances.forEach((instance, index) => {
+      const mesh = BABYLON.MeshBuilder.CreateBox(`${prefix}-${index}`, { size: 1 }, this.scene);
+      mesh.parent = group.root;
+      mesh.isPickable = false;
+      mesh.receiveShadows = false;
+      mesh.material = this.#getMaterial(instance.color);
+      this.#applyTransform(mesh, instance.matrix);
+      group.meshes.push(mesh);
     });
+  }
 
-    renderPass.setPipeline(this.pipeline);
-    renderPass.setVertexBuffer(0, this.vertexBuffer);
-    renderPass.setBindGroup(0, this.sceneBindGroup);
-
-    if (this.boardInstances.count > 0) {
-      renderPass.setVertexBuffer(1, this.boardInstances.buffer);
-      renderPass.draw(this.vertexCount, this.boardInstances.count, 0, 0);
+  #applyTransform(mesh, matrixArray) {
+    if (!Array.isArray(matrixArray) && !(matrixArray instanceof Float32Array)) {
+      return;
     }
 
-    if (this.highlightInstances.count > 0) {
-      renderPass.setVertexBuffer(1, this.highlightInstances.buffer);
-      renderPass.draw(this.vertexCount, this.highlightInstances.count, 0, 0);
+    const matrix = BABYLON.Matrix.FromArray(matrixArray);
+    matrix.decompose(this._tempScaling, this._tempRotation, this._tempPosition);
+    mesh.scaling.copyFrom(this._tempScaling);
+    mesh.rotationQuaternion = mesh.rotationQuaternion ?? new BABYLON.Quaternion();
+    mesh.rotationQuaternion.copyFrom(this._tempRotation);
+    mesh.position.copyFrom(this._tempPosition);
+    mesh.computeWorldMatrix(true);
+  }
+
+  #getMaterial(color) {
+    const key = getColorKey(color);
+    if (this.materialCache.has(key)) {
+      return this.materialCache.get(key);
     }
 
-    if (this.pieceInstances.count > 0) {
-      renderPass.setVertexBuffer(1, this.pieceInstances.buffer);
-      renderPass.draw(this.vertexCount, this.pieceInstances.count, 0, 0);
-    }
+    const material = new BABYLON.StandardMaterial(`mat-${this.materialCache.size}`, this.scene);
+    const [r, g, b] = color ?? [1, 1, 1];
+    material.diffuseColor = new BABYLON.Color3(r, g, b);
+    material.specularColor = new BABYLON.Color3(0.12, 0.12, 0.12);
+    material.ambientColor = new BABYLON.Color3(r * 0.4, g * 0.4, b * 0.4);
+    material.backFaceCulling = true;
+    material.freeze();
 
-    renderPass.end();
-    this.device.queue.submit([commandEncoder.finish()]);
+    this.materialCache.set(key, material);
+    return material;
   }
 }

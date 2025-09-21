@@ -1,4 +1,5 @@
 import { App } from './apps/chess/app.js';
+import { NeonGardenApp } from './apps/neon-garden/app.js';
 
 const hexToRgb = (hex) => {
   const normalized = hex.replace('#', '');
@@ -215,13 +216,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const uiOverlay = document.querySelector('.ui-overlay');
   const launcher = document.getElementById('app-launcher');
   const loadingOverlay = document.getElementById('loading-overlay');
+  const neonContainer = document.getElementById('neon-garden');
+  const neonCanvas = document.getElementById('neon-canvas');
+  const neonReset = document.getElementById('neon-reset');
+  const neonExit = document.getElementById('neon-exit');
+  const neonGrowth = document.getElementById('neon-growth');
   const turnIndicator = document.getElementById('turn-indicator');
   const statusIndicator = document.getElementById('check-indicator');
   const moveHistory = document.getElementById('move-history');
   const moveLog = document.querySelector('.move-log');
   const moveLogToggle = document.getElementById('move-log-toggle');
   const resetBtn = document.getElementById('reset-btn');
-  const pathToggle = document.getElementById('path-toggle');
   const engineIndicator = document.getElementById('engine-indicator');
   const filterButtons = Array.from(document.querySelectorAll('.filter-button'));
   const filterables = Array.from(document.querySelectorAll('.launcher-grid [data-categories]'));
@@ -229,10 +234,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const nebula = nebulaCanvas ? new NebulaBackground(nebulaCanvas) : null;
 
   let appInstance = null;
+  let neonGarden = null;
   let initializing = false;
   let fallbackMessage = '';
   let activeMessage = '';
-  let pathEnabled = false;
   let activeLauncherCard = null;
   const moveLogMedia = window.matchMedia('(max-width: 768px)');
   let moveLogCollapsed = moveLogMedia.matches;
@@ -329,6 +334,28 @@ document.addEventListener('DOMContentLoaded', () => {
     loadingOverlay.classList.remove('hidden');
   };
 
+  const revealNeonGarden = () => {
+    launcher?.classList.add('is-hidden');
+    launcher?.setAttribute('aria-hidden', 'true');
+    canvas.classList.add('is-hidden');
+    uiOverlay.classList.add('is-hidden');
+    loadingOverlay.classList.add('is-hidden');
+    neonContainer?.classList.remove('is-hidden');
+    neonContainer?.setAttribute('aria-hidden', 'false');
+  };
+
+  const returnToLauncher = () => {
+    canvas.classList.add('is-hidden');
+    uiOverlay.classList.add('is-hidden');
+    loadingOverlay.classList.add('is-hidden');
+    neonContainer?.classList.add('is-hidden');
+    neonContainer?.setAttribute('aria-hidden', 'true');
+    launcher?.classList.remove('is-hidden');
+    launcher?.setAttribute('aria-hidden', 'false');
+    activeLauncherCard?.classList.remove('is-active');
+    activeLauncherCard = null;
+  };
+
   const initializeChess = async (card) => {
     if (appInstance || initializing) {
       return;
@@ -343,23 +370,6 @@ document.addEventListener('DOMContentLoaded', () => {
     fallbackMessage = '';
     activeMessage = '';
     updateStatusMessage();
-
-    if (!navigator.gpu) {
-      loadingOverlay.classList.add('hidden');
-      turnIndicator.textContent = 'WebGPU is not supported in this browser.';
-      statusIndicator.textContent = 'Use a WebGPU-enabled browser to explore the 3D board.';
-      statusIndicator.classList.add('visible');
-      pathToggle.disabled = true;
-      resetBtn.disabled = true;
-      canvas.classList.add('is-hidden');
-      uiOverlay.classList.add('is-hidden');
-      loadingOverlay.classList.add('is-hidden');
-      card.disabled = false;
-      launcher?.classList.remove('is-hidden');
-      launcher?.setAttribute('aria-hidden', 'false');
-      initializing = false;
-      return;
-    }
 
     lastHistoryCount = 0;
 
@@ -387,11 +397,6 @@ document.addEventListener('DOMContentLoaded', () => {
           moveLogToggle.classList.toggle('has-updates', hasUpdates);
         }
         lastHistoryCount = historyCount;
-
-        pathEnabled = Boolean(state.usePathTracer);
-        pathToggle.textContent = pathEnabled ? 'Disable Path Tracing' : 'Enable Path Tracing';
-        pathToggle.setAttribute('aria-pressed', pathEnabled ? 'true' : 'false');
-        pathToggle.classList.toggle('active', pathEnabled);
 
         const thinking = Boolean(state.engineThinking);
         engineIndicator.classList.toggle('visible', thinking);
@@ -425,7 +430,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     resetBtn.disabled = false;
-    pathToggle.disabled = false;
 
     loadingOverlay.classList.add('hidden');
     app.start();
@@ -433,17 +437,82 @@ document.addEventListener('DOMContentLoaded', () => {
     initializing = false;
   };
 
+  const initializeNeonGarden = async (card) => {
+    if (initializing) {
+      return;
+    }
+
+    if (!neonCanvas) {
+      console.warn('Neon canvas missing.');
+      return;
+    }
+
+    card.classList.add('is-active');
+    initializeNeonEventListeners();
+
+    if (!neonGarden) {
+      initializing = true;
+      try {
+        neonGarden = new NeonGardenApp({
+          canvas: neonCanvas,
+          growthControl: neonGrowth,
+        });
+        await neonGarden.initialize();
+      } catch (error) {
+        console.error('Failed to initialize Neon Garden', error);
+        neonGarden = null;
+        initializing = false;
+        card.classList.remove('is-active');
+        return;
+      }
+      initializing = false;
+    }
+
+    neonGarden?.reset();
+    revealNeonGarden();
+    neonGarden?.handleResize();
+    neonGarden?.start();
+    activeLauncherCard = card;
+  };
+
+  const cleanupNeonGarden = () => {
+    if (!neonGarden) return;
+    neonGarden.stop?.();
+    neonGarden.reset?.();
+    returnToLauncher();
+  };
+
+  const initializeNeonEventListeners = () => {
+    if (neonReset && !neonReset.dataset.bound) {
+      neonReset.addEventListener('click', () => {
+        neonGarden?.reset();
+      });
+      neonReset.dataset.bound = 'true';
+    }
+    if (neonExit && !neonExit.dataset.bound) {
+      neonExit.addEventListener('click', () => {
+        cleanupNeonGarden();
+      });
+      neonExit.dataset.bound = 'true';
+    }
+  };
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !launcher?.classList.contains('is-hidden')) {
+      return;
+    }
+    if (event.key === 'Escape' && !neonContainer?.classList.contains('is-hidden')) {
+      cleanupNeonGarden();
+    }
+  });
+
   resetBtn.addEventListener('click', () => {
     appInstance?.reset();
   });
 
-  pathToggle.addEventListener('click', () => {
-    if (!appInstance) return;
-    appInstance.setPathTracingEnabled(!pathEnabled);
-  });
-
   const appLaunchers = {
     chess: initializeChess,
+    neon: initializeNeonGarden,
   };
 
   appCards.forEach((card) => {
