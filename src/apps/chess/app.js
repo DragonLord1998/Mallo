@@ -335,6 +335,50 @@ export class App {
     for (const piece of pieces) {
       const { x, z } = toWorldPosition(piece.row, piece.col);
       const baseColor = PIECE_BASE_COLORS[piece.color];
+      if (piece.type === PieceType.KING) {
+        const fallbackScale = [0.78, 2.4, 0.78];
+        instances.push({
+          kind: 'king-model',
+          color: baseColor,
+          position: [x, 0, z],
+          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
+          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
+        });
+        continue;
+      }
+      if (piece.type === PieceType.QUEEN) {
+        const fallbackScale = [0.75, 2.4, 0.75];
+        instances.push({
+          kind: 'queen-model',
+          color: baseColor,
+          position: [x, 0, z],
+          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
+          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
+        });
+        continue;
+      }
+      if (piece.type === PieceType.BISHOP) {
+        const fallbackScale = [0.6, 2.2, 0.6];
+        instances.push({
+          kind: 'bishop-model',
+          color: baseColor,
+          position: [x, 0, z],
+          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
+          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
+        });
+        continue;
+      }
+      if (piece.type === PieceType.PAWN) {
+        const fallbackScale = [0.5, 1.35, 0.5];
+        instances.push({
+          kind: 'pawn-model',
+          color: baseColor,
+          position: [x, 0, z],
+          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
+          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
+        });
+        continue;
+      }
       const shapes = PIECE_SHAPES[piece.type] ?? PIECE_SHAPES[PieceType.PAWN];
       let accumulatedHeight = 0;
       for (const layer of shapes) {

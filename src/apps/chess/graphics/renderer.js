@@ -23,6 +23,15 @@ export class Renderer {
     };
 
     this.materialCache = new Map();
+    this.modelDefinitions = {
+      king: { filename: 'King.glb', targetHeight: 2.4 },
+      queen: { filename: 'queen.glb', targetHeight: 2.4 },
+      pawn: { filename: 'pawn.glb', targetHeight: 1.45 },
+      bishop: { filename: 'bishop.glb', targetHeight: 2.2 },
+    };
+    this.modelAssets = new Map();
+    this.modelLoadPromises = new Map();
+
     this._tempScaling = null;
     this._tempRotation = null;
     this._tempPosition = null;
@@ -63,6 +72,16 @@ export class Renderer {
     this._tempRotation = new BABYLON.Quaternion();
     this._tempPosition = new BABYLON.Vector3();
     this._cameraTarget = new BABYLON.Vector3();
+
+    const loaderPromises = Object.entries(this.modelDefinitions).map(([id, definition]) =>
+      this.#ensureModelLoaded(id, definition).catch((error) => {
+        console.error(`Failed to load ${id} model`, error);
+        this.modelAssets.delete(id);
+      }),
+    );
+    if (loaderPromises.length > 0) {
+      await Promise.all(loaderPromises);
+    }
   }
 
   setLightDirection(direction) {
@@ -88,7 +107,37 @@ export class Renderer {
   }
 
   updatePieceInstances(instances) {
-    this.#syncGroup(this.groups.pieces, instances, 'piece');
+    const group = this.groups.pieces;
+    if (!this.scene || !group?.root) {
+      return;
+    }
+
+    group.meshes.forEach((node) => node.dispose());
+    group.meshes = [];
+
+    if (!Array.isArray(instances) || instances.length === 0) {
+      return;
+    }
+
+    instances.forEach((instance, index) => {
+      const modelId = this.#resolveModelId(instance?.kind);
+      if (modelId) {
+        const node = this.#createModelInstance(modelId, instance, index);
+        if (node) {
+          node.parent = group.root;
+          group.meshes.push(node);
+          return;
+        }
+      }
+
+      const mesh = BABYLON.MeshBuilder.CreateBox(`piece-${index}`, { size: 1 }, this.scene);
+      mesh.parent = group.root;
+      mesh.isPickable = false;
+      mesh.receiveShadows = false;
+      mesh.material = this.#getMaterial(instance.color);
+      this.#applyTransform(mesh, instance.matrix);
+      group.meshes.push(mesh);
+    });
   }
 
   render() {
@@ -140,6 +189,218 @@ export class Renderer {
     mesh.rotationQuaternion.copyFrom(this._tempRotation);
     mesh.position.copyFrom(this._tempPosition);
     mesh.computeWorldMatrix(true);
+  }
+
+  async #ensureModelLoaded(assetId, definition) {
+    if (!this.scene || !BABYLON?.SceneLoader) {
+      return null;
+    }
+
+    if (this.modelAssets.has(assetId)) {
+      return this.modelAssets.get(assetId);
+    }
+
+    if (this.modelLoadPromises.has(assetId)) {
+      return this.modelLoadPromises.get(assetId);
+    }
+
+    const promise = this.#loadModelAsset(assetId, definition);
+    this.modelLoadPromises.set(assetId, promise);
+    const asset = await promise;
+    this.modelLoadPromises.delete(assetId);
+    if (asset) {
+      this.modelAssets.set(assetId, asset);
+    }
+    return asset;
+  }
+
+  async #loadModelAsset(assetId, definition) {
+    const { filename, targetHeight = 2.4 } = definition ?? {};
+    if (!filename) {
+      return null;
+    }
+
+    const root = new BABYLON.TransformNode(`${assetId}-template-root`, this.scene);
+    const offset = new BABYLON.TransformNode(`${assetId}-template-offset`, this.scene);
+    offset.parent = root;
+
+    const result = await BABYLON.SceneLoader.ImportMeshAsync(
+      '',
+      'src/apps/chess/assets/',
+      filename,
+      this.scene,
+    );
+
+    const meshes = Array.isArray(result?.meshes) ? result.meshes : [];
+    const transformNodes = Array.isArray(result?.transformNodes) ? result.transformNodes : [];
+
+    transformNodes
+      .filter((node) => node && node !== root)
+      .forEach((node) => {
+        if (!node.parent) {
+          node.parent = offset;
+        }
+      });
+
+    const materialKeys = new Map();
+    let materialIndex = 0;
+
+    meshes
+      .filter((mesh) => mesh && mesh !== root)
+      .forEach((mesh) => {
+        if (!mesh.parent) {
+          mesh.parent = offset;
+        }
+        mesh.isPickable = false;
+        mesh.receiveShadows = false;
+
+        const material = mesh.material;
+        if (material) {
+          const metadata = material.metadata ?? (material.metadata = {});
+          if (!metadata.modelMaterialKey) {
+            const generatedKey = material.id
+              || material.name
+              || `${assetId}-material-${materialIndex += 1}`;
+            metadata.modelMaterialKey = generatedKey;
+          }
+          const key = metadata.modelMaterialKey;
+          if (!materialKeys.has(key)) {
+            materialKeys.set(key, material);
+          }
+        }
+      });
+
+    if (offset.getChildMeshes().length === 0) {
+      root.dispose();
+      return null;
+    }
+
+    const { min, max } = offset.getHierarchyBoundingVectors(true);
+    const height = Math.max(max.y - min.y, 1e-3);
+    const centerX = (min.x + max.x) * 0.5;
+    const centerZ = (min.z + max.z) * 0.5;
+
+    const uniformScale = targetHeight / height;
+    offset.scaling.copyFromFloats(uniformScale, uniformScale, uniformScale);
+    offset.position.copyFromFloats(
+      -centerX * uniformScale,
+      -min.y * uniformScale,
+      -centerZ * uniformScale,
+    );
+
+    root.setEnabled(false);
+
+    return {
+      assetId,
+      template: root,
+      targetHeight,
+      baseMaterials: materialKeys,
+      tintedCache: new Map(),
+    };
+  }
+
+  #resolveModelId(kind) {
+    switch (kind) {
+      case 'king-model':
+        return 'king';
+      case 'queen-model':
+        return 'queen';
+      case 'pawn-model':
+        return 'pawn';
+      case 'bishop-model':
+        return 'bishop';
+      default:
+        return null;
+    }
+  }
+
+  #createModelInstance(assetId, instance, index) {
+    const asset = this.modelAssets.get(assetId);
+    if (!asset?.template) {
+      return null;
+    }
+
+    const clone = asset.template.clone(`piece-${assetId}-${index}`, null);
+    if (!clone) {
+      return null;
+    }
+    clone.setEnabled(true);
+
+    const color = instance?.color;
+    const materialMap = this.#getModelMaterialsForColor(asset, color);
+    clone.getChildMeshes().forEach((mesh) => {
+      mesh.isPickable = false;
+      mesh.receiveShadows = false;
+      const baseMaterial = mesh.material;
+      if (!baseMaterial) {
+        return;
+      }
+      const key = baseMaterial.metadata?.modelMaterialKey
+        || baseMaterial.id
+        || baseMaterial.name;
+      const tinted = key ? materialMap.get(key) : null;
+      if (tinted) {
+        mesh.material = tinted;
+      }
+    });
+
+    const position = instance?.position ?? [0, 0, 0];
+    clone.position.copyFromFloats(position[0] ?? 0, position[1] ?? 0, position[2] ?? 0);
+
+    if (typeof instance?.rotationY === 'number') {
+      clone.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, instance.rotationY, 0);
+    } else {
+      clone.rotationQuaternion = clone.rotationQuaternion ?? BABYLON.Quaternion.Identity();
+    }
+
+    if (Array.isArray(instance?.scale)) {
+      clone.scaling.copyFromFloats(instance.scale[0] ?? 1, instance.scale[1] ?? 1, instance.scale[2] ?? 1);
+    }
+
+    clone.computeWorldMatrix(true);
+    return clone;
+  }
+
+  #getModelMaterialsForColor(asset, color) {
+    if (!asset) {
+      return new Map();
+    }
+
+    const key = getColorKey(Array.isArray(color) ? color : [1, 1, 1]);
+    if (asset.tintedCache.has(key)) {
+      return asset.tintedCache.get(key);
+    }
+
+    const map = new Map();
+    for (const [materialKey, baseMaterial] of asset.baseMaterials.entries()) {
+      const clone = baseMaterial?.clone?.(`${baseMaterial?.name || `${asset.assetId}-material`}-${key}`);
+      if (!clone) {
+        continue;
+      }
+      clone.metadata = {
+        ...(clone.metadata ?? {}),
+        modelMaterialKey: materialKey,
+      };
+      this.#tintModelMaterial(clone, color);
+      map.set(materialKey, clone);
+    }
+
+    asset.tintedCache.set(key, map);
+    return map;
+  }
+
+  #tintModelMaterial(material, color) {
+    const [r, g, b] = Array.isArray(color) ? color : [1, 1, 1];
+
+    if ('albedoColor' in material && material.albedoColor) {
+      material.albedoColor.copyFromFloats(r, g, b);
+    } else if ('diffuseColor' in material && material.diffuseColor) {
+      material.diffuseColor.copyFromFloats(r, g, b);
+    }
+
+    if (typeof material.backFaceCulling === 'boolean') {
+      material.backFaceCulling = true;
+    }
   }
 
   #getMaterial(color) {
