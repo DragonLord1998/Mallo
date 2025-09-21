@@ -31,6 +31,7 @@ export class Renderer {
     };
     this.modelAssets = new Map();
     this.modelLoadPromises = new Map();
+    this.pieceRegistry = new Map();
 
     this._tempScaling = null;
     this._tempRotation = null;
@@ -112,32 +113,43 @@ export class Renderer {
       return;
     }
 
-    group.meshes.forEach((node) => node.dispose());
-    group.meshes = [];
+    const activeIds = new Set();
 
-    if (!Array.isArray(instances) || instances.length === 0) {
-      return;
-    }
-
-    instances.forEach((instance, index) => {
-      const modelId = this.#resolveModelId(instance?.kind);
-      if (modelId) {
-        const node = this.#createModelInstance(modelId, instance, index);
-        if (node) {
-          node.parent = group.root;
-          group.meshes.push(node);
+    if (Array.isArray(instances)) {
+      instances.forEach((instance) => {
+        const id = instance?.id;
+        if (id === undefined || id === null) {
           return;
         }
-      }
+        activeIds.add(id);
+        const modelId = this.#resolveModelId(instance?.kind);
+        let entry = this.pieceRegistry.get(id);
+        const needsRebuild =
+          !entry || entry.type !== instance.type || entry.modelId !== modelId;
+        if (needsRebuild) {
+          if (entry) {
+            this.#disposePieceEntry(entry);
+          }
+          entry = this.#createPieceEntry({ ...instance, modelId });
+          if (!entry) {
+            return;
+          }
+          this.pieceRegistry.set(id, entry);
+        }
+        this.#updatePieceEntry(entry, instance);
+      });
+    }
 
-      const mesh = BABYLON.MeshBuilder.CreateBox(`piece-${index}`, { size: 1 }, this.scene);
-      mesh.parent = group.root;
-      mesh.isPickable = false;
-      mesh.receiveShadows = false;
-      mesh.material = this.#getMaterial(instance.color);
-      this.#applyTransform(mesh, instance.matrix);
-      group.meshes.push(mesh);
-    });
+    for (const [id, entry] of this.pieceRegistry.entries()) {
+      if (!activeIds.has(id)) {
+        this.#disposePieceEntry(entry);
+        this.pieceRegistry.delete(id);
+      }
+    }
+
+    this.groups.pieces.meshes = Array.from(this.pieceRegistry.values()).map(
+      (entry) => entry.root,
+    );
   }
 
   render() {
@@ -159,10 +171,12 @@ export class Renderer {
       return;
     }
 
-    group.meshes.forEach((mesh) => mesh.dispose());
-    group.meshes = [];
+    const previousMeshes = Array.isArray(group.meshes) ? [...group.meshes] : [];
+    const newMeshes = [];
 
     if (!Array.isArray(instances) || instances.length === 0) {
+      previousMeshes.forEach((mesh) => mesh.dispose());
+      group.meshes = [];
       return;
     }
 
@@ -173,8 +187,11 @@ export class Renderer {
       mesh.receiveShadows = false;
       mesh.material = this.#getMaterial(instance.color);
       this.#applyTransform(mesh, instance.matrix);
-      group.meshes.push(mesh);
+      newMeshes.push(mesh);
     });
+
+    previousMeshes.forEach((mesh) => mesh.dispose());
+    group.meshes = newMeshes;
   }
 
   #applyTransform(mesh, matrixArray) {
@@ -314,51 +331,251 @@ export class Renderer {
     }
   }
 
-  #createModelInstance(assetId, instance, index) {
-    const asset = this.modelAssets.get(assetId);
-    if (!asset?.template) {
+  #createPieceEntry(piece) {
+    const { id, modelId } = piece ?? {};
+    if (id === undefined || id === null) {
       return null;
     }
 
-    const clone = asset.template.clone(`piece-${assetId}-${index}`, null);
-    if (!clone) {
-      return null;
-    }
-    clone.setEnabled(true);
+    const root = new BABYLON.TransformNode(`piece-${id}`, this.scene);
+    root.parent = this.groups.pieces.root;
+    root.isPickable = false;
 
-    const color = instance?.color;
-    const materialMap = this.#getModelMaterialsForColor(asset, color);
-    clone.getChildMeshes().forEach((mesh) => {
+    let primaryNode = null;
+    let fallbackMeshes = [];
+    const color = Array.isArray(piece?.color) ? piece.color : [1, 1, 1];
+
+    if (modelId) {
+      const asset = this.modelAssets.get(modelId);
+      if (asset?.template) {
+        const clone = asset.template.clone(`piece-${modelId}-${id}`, root);
+        if (clone) {
+          clone.setEnabled(true);
+          clone.parent = root;
+          const materialMap = this.#getModelMaterialsForColor(asset, color);
+          clone.getChildMeshes().forEach((mesh) => {
+            mesh.isPickable = false;
+            mesh.receiveShadows = false;
+            const baseMaterial = mesh.material;
+            if (!baseMaterial) {
+              return;
+            }
+            const key = baseMaterial.metadata?.modelMaterialKey
+              || baseMaterial.id
+              || baseMaterial.name;
+            const tinted = key ? materialMap.get(key) : null;
+            if (tinted) {
+              mesh.material = tinted;
+            }
+          });
+          primaryNode = clone;
+        }
+      }
+    }
+
+    if (!primaryNode) {
+      fallbackMeshes = this.#createFallbackMeshes(root, piece?.fallbackLayers, color);
+    }
+
+    return {
+      id,
+      root,
+      primaryNode,
+      fallbackMeshes,
+      modelId,
+      type: piece?.type ?? null,
+      colorKey: getColorKey(color),
+      fallbackLayers: Array.isArray(piece?.fallbackLayers)
+        ? piece.fallbackLayers.map((layer) => ({ ...layer }))
+        : [],
+      basePosition: new BABYLON.Vector3(0, 0, 0),
+      offset: new BABYLON.Vector3(0, 0, 0),
+      baseRotationY: 0,
+      rotationOffsetY: 0,
+    };
+  }
+
+  #updatePieceEntry(entry, piece) {
+    if (!entry?.root) {
+      return;
+    }
+
+    const position = Array.isArray(piece?.position) ? piece.position : [0, 0, 0];
+    entry.basePosition.copyFromFloats(position[0] ?? 0, position[1] ?? 0, position[2] ?? 0);
+
+    const rotationY = typeof piece?.rotationY === 'number' ? piece.rotationY : 0;
+    entry.baseRotationY = rotationY;
+
+    const color = Array.isArray(piece?.color) ? piece.color : [1, 1, 1];
+    const colorKey = getColorKey(color);
+    if (colorKey !== entry.colorKey) {
+      this.#applyPieceColor(entry, color);
+      entry.colorKey = colorKey;
+    }
+
+    if (!entry.primaryNode && entry.fallbackMeshes.length > 0) {
+      this.#updateFallbackMeshes(entry, piece?.fallbackLayers);
+    }
+
+    this.#applyPieceTransform(entry);
+  }
+
+  #disposePieceEntry(entry) {
+    if (!entry) {
+      return;
+    }
+    if (Array.isArray(entry.fallbackMeshes)) {
+      entry.fallbackMeshes.forEach((mesh) => mesh.dispose());
+    }
+    if (entry.primaryNode) {
+      entry.primaryNode.dispose(true, true);
+    }
+    entry.root?.dispose(true, true);
+  }
+
+  #applyPieceColor(entry, color) {
+    const modelId = entry?.modelId;
+    if (modelId && entry?.primaryNode) {
+      const asset = this.modelAssets.get(modelId);
+      if (asset) {
+        const materialMap = this.#getModelMaterialsForColor(asset, color);
+        entry.primaryNode.getChildMeshes().forEach((mesh) => {
+          const baseMaterial = mesh.material;
+          if (!baseMaterial) {
+            return;
+          }
+          const key = baseMaterial.metadata?.modelMaterialKey
+            || baseMaterial.id
+            || baseMaterial.name;
+          const tinted = key ? materialMap.get(key) : null;
+          if (tinted) {
+            mesh.material = tinted;
+          }
+        });
+      }
+    } else if (Array.isArray(entry?.fallbackMeshes) && entry?.fallbackLayers) {
+      entry.fallbackMeshes.forEach((mesh, index) => {
+        const layer = entry.fallbackLayers[index];
+        if (!layer) {
+          return;
+        }
+        mesh.material = this.#getMaterial(layer.color ?? color);
+      });
+    }
+  }
+
+  #createFallbackMeshes(parent, layers, defaultColor = [1, 1, 1]) {
+    const meshes = [];
+    if (!Array.isArray(layers) || layers.length === 0) {
+      return meshes;
+    }
+
+    layers.forEach((layer, index) => {
+      const scale = Array.isArray(layer?.scale) ? layer.scale : [1, 1, 1];
+      const mesh = BABYLON.MeshBuilder.CreateBox(
+        `${parent.name ?? 'piece'}-fallback-${index}`,
+        { size: 1 },
+        this.scene,
+      );
+      mesh.parent = parent;
       mesh.isPickable = false;
       mesh.receiveShadows = false;
-      const baseMaterial = mesh.material;
-      if (!baseMaterial) {
+      mesh.scaling.copyFromFloats(scale[0] ?? 1, scale[1] ?? 1, scale[2] ?? 1);
+      const yOffset = typeof layer?.yOffset === 'number' ? layer.yOffset : 0;
+      mesh.position.copyFromFloats(0, yOffset, 0);
+      mesh.material = this.#getMaterial(layer?.color ?? defaultColor);
+      meshes.push(mesh);
+    });
+    return meshes;
+  }
+
+  #updateFallbackMeshes(entry, layers) {
+    if (!Array.isArray(entry?.fallbackMeshes)) {
+      return;
+    }
+    entry.fallbackLayers = Array.isArray(layers)
+      ? layers.map((layer) => ({ ...layer }))
+      : entry.fallbackLayers;
+    entry.fallbackMeshes.forEach((mesh, index) => {
+      const layer = entry.fallbackLayers[index];
+      if (!layer) {
         return;
       }
-      const key = baseMaterial.metadata?.modelMaterialKey
-        || baseMaterial.id
-        || baseMaterial.name;
-      const tinted = key ? materialMap.get(key) : null;
-      if (tinted) {
-        mesh.material = tinted;
-      }
+      const scale = Array.isArray(layer.scale) ? layer.scale : [1, 1, 1];
+      mesh.scaling.copyFromFloats(scale[0] ?? 1, scale[1] ?? 1, scale[2] ?? 1);
+      const yOffset = typeof layer.yOffset === 'number' ? layer.yOffset : 0;
+      mesh.position.y = yOffset;
+      mesh.material = this.#getMaterial(layer.color ?? [1, 1, 1]);
     });
+  }
 
-    const position = instance?.position ?? [0, 0, 0];
-    clone.position.copyFromFloats(position[0] ?? 0, position[1] ?? 0, position[2] ?? 0);
+  #applyPieceTransform(entry) {
+    if (!entry?.root) {
+      return;
+    }
+    const finalX = entry.basePosition.x + entry.offset.x;
+    const finalY = entry.basePosition.y + entry.offset.y;
+    const finalZ = entry.basePosition.z + entry.offset.z;
+    entry.root.position.copyFromFloats(finalX, finalY, finalZ);
 
-    if (typeof instance?.rotationY === 'number') {
-      clone.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, instance.rotationY, 0);
+    const rotationY = entry.baseRotationY + entry.rotationOffsetY;
+    entry.root.rotationQuaternion = entry.root.rotationQuaternion ?? new BABYLON.Quaternion();
+    BABYLON.Quaternion.FromEulerAnglesToRef(0, rotationY, 0, entry.root.rotationQuaternion);
+
+    entry.root.computeWorldMatrix(true);
+  }
+
+  getPieceEntry(id) {
+    return this.pieceRegistry.get(id) ?? null;
+  }
+
+  setPieceOffset(id, offset) {
+    const entry = this.pieceRegistry.get(id);
+    if (!entry?.offset) {
+      return;
+    }
+    if (Array.isArray(offset)) {
+      entry.offset.copyFromFloats(offset[0] ?? 0, offset[1] ?? 0, offset[2] ?? 0);
+    } else if (offset && typeof offset === 'object') {
+      entry.offset.copyFrom(offset);
     } else {
-      clone.rotationQuaternion = clone.rotationQuaternion ?? BABYLON.Quaternion.Identity();
+      entry.offset.copyFromFloats(0, 0, 0);
     }
+    this.#applyPieceTransform(entry);
+  }
 
-    if (Array.isArray(instance?.scale)) {
-      clone.scaling.copyFromFloats(instance.scale[0] ?? 1, instance.scale[1] ?? 1, instance.scale[2] ?? 1);
+  setPieceBasePosition(id, position) {
+    const entry = this.pieceRegistry.get(id);
+    if (!entry?.basePosition) {
+      return;
     }
+    if (Array.isArray(position)) {
+      entry.basePosition.copyFromFloats(position[0] ?? 0, position[1] ?? 0, position[2] ?? 0);
+    } else if (position && typeof position === 'object') {
+      entry.basePosition.copyFrom(position);
+    }
+    this.#applyPieceTransform(entry);
+  }
 
-    clone.computeWorldMatrix(true);
-    return clone;
+  setPieceRotationOffset(id, offsetY = 0) {
+    const entry = this.pieceRegistry.get(id);
+    if (!entry) {
+      return;
+    }
+    entry.rotationOffsetY = typeof offsetY === 'number' ? offsetY : 0;
+    this.#applyPieceTransform(entry);
+  }
+
+  removePiece(id) {
+    const entry = this.pieceRegistry.get(id);
+    if (!entry) {
+      return;
+    }
+    this.#disposePieceEntry(entry);
+    this.pieceRegistry.delete(id);
+    this.groups.pieces.meshes = Array.from(this.pieceRegistry.values()).map(
+      (item) => item.root,
+    );
   }
 
   #getModelMaterialsForColor(asset, color) {

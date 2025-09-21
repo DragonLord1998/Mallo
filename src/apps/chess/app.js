@@ -68,6 +68,31 @@ function adjustColor(color, factor) {
   return color.map((c) => Math.min(1, c + (1 - c) * mix));
 }
 
+function easeInOutCubic(t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function buildFallbackLayers(shapes, baseColor) {
+  if (!Array.isArray(shapes) || shapes.length === 0) {
+    return [];
+  }
+  const layers = [];
+  let accumulatedHeight = 0;
+  for (const shape of shapes) {
+    const [sx, sy, sz] = shape.scale;
+    const centerY = accumulatedHeight + sy * 0.5;
+    accumulatedHeight += sy;
+    layers.push({
+      scale: [...shape.scale],
+      yOffset: centerY,
+      color: adjustColor(baseColor, shape.colorFactor ?? 1),
+    });
+  }
+  return layers;
+}
+
 function toWorldPosition(row, col) {
   return {
     x: col - BOARD_HALF,
@@ -124,6 +149,18 @@ export class App {
     this.camera = null;
 
     this.boardInstances = [];
+    this.currentPieceStates = [];
+    this.currentPieceStateMap = new Map();
+    this.currentPieceIndexMap = new Map();
+    this.activeAnimations = [];
+    this.animationInProgress = false;
+    this.animationSettings = {
+      moveDuration: 0.6,
+      liftHeight: 0.45,
+      sidestepDistance: 0.6,
+      sidestepDuration: 0.25,
+      sidestepReturnDuration: 0.25,
+    };
 
     this.engine = null;
     this.engineReadyPromise = null;
@@ -242,6 +279,8 @@ export class App {
   }
 
   reset() {
+    this.activeAnimations = [];
+    this.animationInProgress = false;
     this.game.reset();
     this.selectedSquare = null;
     this.hoverSquare = null;
@@ -308,6 +347,8 @@ export class App {
 
     this.camera.update(deltaSeconds);
 
+    this.updateAnimations(deltaSeconds);
+
     const cameraPosition = this.camera.getCameraPosition();
     const cameraTarget = this.camera.getTarget();
     this.renderer.updateCamera({ position: cameraPosition, target: cameraTarget });
@@ -330,67 +371,336 @@ export class App {
   }
 
   updatePieces() {
+    const states = this.buildPieceStates();
+    this.applyPieceStates(states);
+    return states;
+  }
+
+  buildPieceStates() {
     const pieces = this.game.getPieces();
-    const instances = [];
+    const pieceStates = [];
     for (const piece of pieces) {
       const { x, z } = toWorldPosition(piece.row, piece.col);
       const baseColor = PIECE_BASE_COLORS[piece.color];
-      if (piece.type === PieceType.KING) {
-        const fallbackScale = [0.78, 2.4, 0.78];
-        instances.push({
-          kind: 'king-model',
-          color: baseColor,
-          position: [x, 0, z],
-          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
-          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
-        });
-        continue;
-      }
-      if (piece.type === PieceType.QUEEN) {
-        const fallbackScale = [0.75, 2.4, 0.75];
-        instances.push({
-          kind: 'queen-model',
-          color: baseColor,
-          position: [x, 0, z],
-          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
-          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
-        });
-        continue;
-      }
-      if (piece.type === PieceType.BISHOP) {
-        const fallbackScale = [0.6, 2.2, 0.6];
-        instances.push({
-          kind: 'bishop-model',
-          color: baseColor,
-          position: [x, 0, z],
-          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
-          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
-        });
-        continue;
-      }
-      if (piece.type === PieceType.PAWN) {
-        const fallbackScale = [0.5, 1.35, 0.5];
-        instances.push({
-          kind: 'pawn-model',
-          color: baseColor,
-          position: [x, 0, z],
-          rotationY: piece.color === PieceColor.BLACK ? Math.PI : 0,
-          matrix: createTransform(x, fallbackScale[1] * 0.5, z, fallbackScale),
-        });
-        continue;
-      }
+      const rotationY = piece.color === PieceColor.BLACK ? Math.PI : 0;
       const shapes = PIECE_SHAPES[piece.type] ?? PIECE_SHAPES[PieceType.PAWN];
-      let accumulatedHeight = 0;
-      for (const layer of shapes) {
-        const [sx, sy, sz] = layer.scale;
-        const centerY = accumulatedHeight + sy * 0.5;
-        accumulatedHeight += sy;
-        const matrix = createTransform(x, centerY, z, layer.scale);
-        const color = adjustColor(baseColor, layer.colorFactor ?? 1);
-        instances.push({ matrix, color });
+      const fallbackLayers = buildFallbackLayers(shapes, baseColor);
+      let kind = null;
+      switch (piece.type) {
+        case PieceType.KING:
+          kind = 'king-model';
+          break;
+        case PieceType.QUEEN:
+          kind = 'queen-model';
+          break;
+        case PieceType.BISHOP:
+          kind = 'bishop-model';
+          break;
+        case PieceType.PAWN:
+          kind = 'pawn-model';
+          break;
+        default:
+          kind = null;
+          break;
+      }
+      pieceStates.push({
+        id: piece.id,
+        type: piece.type,
+        index: piece.index,
+        color: baseColor,
+        kind,
+        position: [x, 0, z],
+        rotationY,
+        fallbackLayers,
+      });
+    }
+    return pieceStates;
+  }
+
+  applyPieceStates(states, { updateRenderer = true } = {}) {
+    this.currentPieceStates = Array.isArray(states) ? states : [];
+    this.currentPieceStateMap = new Map(
+      this.currentPieceStates.map((state) => [state.id, state]),
+    );
+    this.currentPieceIndexMap = new Map(
+      this.currentPieceStates.map((state) => [state.index, state]),
+    );
+    if (updateRenderer) {
+      this.renderer.updatePieceInstances(this.currentPieceStates);
+    }
+  }
+
+  scheduleMoveAnimation({ result, context, previousIndexMap, previousIdMap, nextStates }) {
+    if (!Array.isArray(nextStates) || nextStates.length === 0) {
+      this.applyPieceStates(nextStates);
+      this.renderer.updatePieceInstances(this.currentPieceStates);
+      return;
+    }
+
+    const fromIndex = typeof context?.from === 'number' ? context.from : null;
+    const toIndex = typeof context?.to === 'number' ? context.to : null;
+    if (fromIndex === null || toIndex === null) {
+      this.applyPieceStates(nextStates);
+      this.renderer.updatePieceInstances(this.currentPieceStates);
+      return;
+    }
+
+    const fromState = previousIndexMap.get(fromIndex);
+    if (!fromState) {
+      this.applyPieceStates(nextStates);
+      this.renderer.updatePieceInstances(this.currentPieceStates);
+      return;
+    }
+
+    const nextMap = new Map(nextStates.map((state) => [state.id, state]));
+    const toState = nextMap.get(fromState.id);
+    if (!toState) {
+      this.applyPieceStates(nextStates);
+      this.renderer.updatePieceInstances(this.currentPieceStates);
+      return;
+    }
+
+    const movingEntry = this.renderer.getPieceEntry(fromState.id);
+    if (!movingEntry) {
+      this.applyPieceStates(nextStates);
+      this.renderer.updatePieceInstances(this.currentPieceStates);
+      return;
+    }
+
+    this.animationInProgress = true;
+
+    this.renderer.setPieceBasePosition(fromState.id, toState.position);
+    const startOffset = [
+      fromState.position[0] - toState.position[0],
+      fromState.position[1] - toState.position[1],
+      fromState.position[2] - toState.position[2],
+    ];
+    this.renderer.setPieceOffset(fromState.id, startOffset);
+    this.renderer.setPieceRotationOffset(fromState.id, 0);
+
+    const moveAnim = {
+      kind: 'move',
+      pieceId: fromState.id,
+      duration: this.animationSettings.moveDuration,
+      elapsed: 0,
+      startOffset,
+      targetOffset: [0, 0, 0],
+      liftHeight: this.animationSettings.liftHeight,
+      blockers: [],
+      completed: false,
+    };
+    this.activeAnimations.push(moveAnim);
+
+    const capturedId = result?.captured?.id ?? null;
+    const blockers = this.computeBlockingPieces({
+      fromState,
+      toState,
+      previousStates: previousIdMap,
+      capturedId,
+    });
+
+    blockers.forEach((blocker) => {
+      this.renderer.setPieceOffset(blocker.id, [0, 0, 0]);
+      const outAnim = {
+        kind: 'sidestep',
+        pieceId: blocker.id,
+        duration: this.animationSettings.sidestepDuration,
+        elapsed: 0,
+        startOffset: [0, 0, 0],
+        targetOffset: blocker.offset,
+        completed: false,
+        meta: { phase: 'out' },
+      };
+      this.activeAnimations.push(outAnim);
+      moveAnim.blockers.push(blocker);
+    });
+
+    if (typeof capturedId === 'number' && previousIdMap.has(capturedId)) {
+      const captureAnim = {
+        kind: 'capture',
+        pieceId: capturedId,
+        duration: Math.max(this.animationSettings.moveDuration * 0.6, 0.2),
+        elapsed: 0,
+        startOffset: [0, 0, 0],
+        targetOffset: [0, -0.8, 0],
+        startScale: 1,
+        endScale: 0.2,
+        onComplete: () => {
+          this.renderer.removePiece(capturedId);
+        },
+      };
+      this.activeAnimations.push(captureAnim);
+    }
+
+    if (result?.castle?.rookFrom !== undefined && result?.castle?.rookTo !== undefined) {
+      const rookFromState = previousIndexMap.get(result.castle.rookFrom);
+      if (rookFromState) {
+        const rookNextState = nextMap.get(rookFromState.id);
+        if (rookNextState) {
+          this.renderer.setPieceBasePosition(rookFromState.id, rookNextState.position);
+          const rookOffset = [
+            rookFromState.position[0] - rookNextState.position[0],
+            rookFromState.position[1] - rookNextState.position[1],
+            rookFromState.position[2] - rookNextState.position[2],
+          ];
+          this.renderer.setPieceOffset(rookFromState.id, rookOffset);
+          this.renderer.setPieceRotationOffset(rookFromState.id, 0);
+          const rookAnim = {
+            kind: 'move',
+            pieceId: rookFromState.id,
+            duration: this.animationSettings.moveDuration * 0.8,
+            elapsed: 0,
+            startOffset: rookOffset,
+            targetOffset: [0, 0, 0],
+            liftHeight: this.animationSettings.liftHeight * 0.5,
+            blockers: [],
+            completed: false,
+          };
+          this.activeAnimations.push(rookAnim);
+        }
       }
     }
-    this.renderer.updatePieceInstances(instances);
+
+    moveAnim.onComplete = () => {
+      moveAnim.completed = true;
+      moveAnim.blockers.forEach((blocker) => {
+        this.activeAnimations.push({
+          kind: 'sidestep',
+          pieceId: blocker.id,
+          duration: this.animationSettings.sidestepReturnDuration,
+          elapsed: 0,
+          startOffset: blocker.offset,
+          targetOffset: [0, 0, 0],
+          completed: false,
+          meta: { phase: 'back' },
+        });
+      });
+    };
+  }
+
+  computeBlockingPieces({ fromState, toState, previousStates, capturedId }) {
+    const blockers = [];
+    if (!fromState || !toState) {
+      return blockers;
+    }
+
+    const start = fromState.position;
+    const end = toState.position;
+    const dx = end[0] - start[0];
+    const dz = end[2] - start[2];
+    const length = Math.hypot(dx, dz);
+    if (length < 1e-4) {
+      return blockers;
+    }
+
+    const dirX = dx / length;
+    const dirZ = dz / length;
+    const perpX = -dirZ;
+    const perpZ = dirX;
+    const threshold = 0.6;
+
+    for (const state of previousStates.values()) {
+      if (!state || state.id === fromState.id || state.id === capturedId) {
+        continue;
+      }
+      const px = state.position[0] - start[0];
+      const pz = state.position[2] - start[2];
+      const t = (px * dirX + pz * dirZ) / length;
+      if (t <= 0 || t >= 1) {
+        continue;
+      }
+      const closestX = start[0] + dirX * t * length;
+      const closestZ = start[2] + dirZ * t * length;
+      const offsetX = state.position[0] - closestX;
+      const offsetZ = state.position[2] - closestZ;
+      const distance = Math.hypot(offsetX, offsetZ);
+      if (distance > threshold) {
+        continue;
+      }
+      const sideSign = Math.sign(offsetX * perpX + offsetZ * perpZ) || 1;
+      const offset = [
+        perpX * sideSign * this.animationSettings.sidestepDistance,
+        0,
+        perpZ * sideSign * this.animationSettings.sidestepDistance,
+      ];
+      blockers.push({ id: state.id, offset, distance, t });
+    }
+    return blockers;
+  }
+
+  updateAnimations(deltaSeconds) {
+    if (!this.animationInProgress && this.activeAnimations.length === 0) {
+      return;
+    }
+
+    const completed = [];
+
+    for (const anim of this.activeAnimations) {
+      anim.elapsed += deltaSeconds;
+      const progress = Math.min(anim.elapsed / Math.max(anim.duration, 1e-6), 1);
+      const eased = easeInOutCubic(progress);
+
+      if (anim.kind === 'move') {
+        const currentOffset = [
+          anim.startOffset[0] * (1 - eased),
+          anim.startOffset[1] * (1 - eased),
+          anim.startOffset[2] * (1 - eased),
+        ];
+        currentOffset[1] += Math.sin(eased * Math.PI) * anim.liftHeight;
+        this.renderer.setPieceOffset(anim.pieceId, currentOffset);
+        if (progress >= 1) {
+          this.renderer.setPieceOffset(anim.pieceId, [0, 0, 0]);
+          completed.push(anim);
+        }
+      } else if (anim.kind === 'sidestep') {
+        const currentOffset = [
+          anim.startOffset[0] + (anim.targetOffset[0] - anim.startOffset[0]) * eased,
+          anim.startOffset[1] + (anim.targetOffset[1] - anim.startOffset[1]) * eased,
+          anim.startOffset[2] + (anim.targetOffset[2] - anim.startOffset[2]) * eased,
+        ];
+        this.renderer.setPieceOffset(anim.pieceId, currentOffset);
+        if (progress >= 1) {
+          this.renderer.setPieceOffset(anim.pieceId, anim.targetOffset);
+          completed.push(anim);
+        }
+      } else if (anim.kind === 'capture') {
+        const currentOffset = [
+          anim.startOffset[0] + (anim.targetOffset[0] - anim.startOffset[0]) * eased,
+          anim.startOffset[1] + (anim.targetOffset[1] - anim.startOffset[1]) * eased,
+          anim.startOffset[2] + (anim.targetOffset[2] - anim.startOffset[2]) * eased,
+        ];
+        this.renderer.setPieceOffset(anim.pieceId, currentOffset);
+        const scale = anim.startScale + (anim.endScale - anim.startScale) * eased;
+        const entry = this.renderer.getPieceEntry(anim.pieceId);
+        if (entry?.root?.scaling) {
+          entry.root.scaling.copyFromFloats(scale, Math.max(scale, 0.1), scale);
+        }
+        if (progress >= 1) {
+          completed.push(anim);
+        }
+      }
+    }
+
+    if (completed.length > 0) {
+      this.activeAnimations = this.activeAnimations.filter((anim) => !completed.includes(anim));
+      for (const anim of completed) {
+        if (typeof anim.onComplete === 'function') {
+          anim.onComplete(anim);
+        }
+      }
+    }
+
+    if (this.activeAnimations.length === 0 && this.animationInProgress) {
+      this.animationInProgress = false;
+      this.renderer.updatePieceInstances(this.currentPieceStates);
+      // Reset captured piece scales in case update reuses materials
+      for (const state of this.currentPieceStates) {
+        const entry = this.renderer.getPieceEntry(state.id);
+        if (entry?.root?.scaling) {
+          entry.root.scaling.copyFromFloats(1, 1, 1);
+        }
+      }
+    }
   }
 
   updateHighlights() {
@@ -668,6 +978,9 @@ export class App {
   }
 
   canSelectPieces() {
+    if (this.animationInProgress) {
+      return false;
+    }
     if (!this.singlePlayer) {
       return true;
     }
@@ -872,9 +1185,11 @@ export class App {
     if (this.selectedSquare !== null) {
       const move = this.legalMoves.find((m) => m.to === squareIndex);
       if (move) {
-        const result = this.game.move(this.selectedSquare, squareIndex);
+        const fromIndex = this.selectedSquare;
+        const toIndex = squareIndex;
+        const result = this.game.move(fromIndex, toIndex);
         if (result.success) {
-          this.processMoveResult(result);
+          this.processMoveResult(result, { from: fromIndex, to: toIndex });
           return;
         }
       }
@@ -891,11 +1206,23 @@ export class App {
     this.updateHighlights();
   }
 
-  processMoveResult(result) {
+  processMoveResult(result, context = {}) {
     this.selectedSquare = null;
     this.legalMoves = [];
     this.hoverSquare = null;
-    this.updatePieces();
+    const previousIndexMap = this.currentPieceIndexMap ?? new Map();
+    const previousIdMap = this.currentPieceStateMap ?? new Map();
+    const nextStates = this.buildPieceStates();
+
+    this.scheduleMoveAnimation({
+      result,
+      context,
+      previousIndexMap,
+      previousIdMap,
+      nextStates,
+    });
+
+    this.applyPieceStates(nextStates, { updateRenderer: false });
     this.updateHighlights();
     this.updateUI();
 
@@ -991,7 +1318,7 @@ export class App {
       if (!result.success) {
         throw new Error(result.message ?? 'Engine move rejected');
       }
-      this.processMoveResult(result);
+      this.processMoveResult(result, parsed);
     } catch (error) {
       console.error('Stockfish move error', error);
       this.engineThinking = false;
