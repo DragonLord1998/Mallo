@@ -8,66 +8,10 @@
   </head>
   <body>
     <canvas id="nebula-canvas" aria-hidden="true"></canvas>
-    <div id="app-launcher" class="launcher" role="dialog" aria-modal="true" aria-labelledby="launcher-title">
-      <div class="launcher-panel">
-        <header class="launcher-header">
-          <div class="launcher-brand">
-            <span class="brand-mark" aria-hidden="true">M</span>
-            <div class="brand-copy">
-              <h1 id="launcher-title">Mallo</h1>
-              <p>Modular Astro-Luminosity Lab Ops — interactive experiments from the frontier of realtime play.</p>
-            </div>
-          </div>
-        </header>
-        <div class="launcher-controls" role="tablist" aria-label="Filter experiences">
-          <button class="filter-button is-active" type="button" data-filter="all" role="tab" aria-selected="true">All</button>
-          <button class="filter-button" type="button" data-filter="realtime" role="tab" aria-selected="false">Realtime</button>
-          <button class="filter-button" type="button" data-filter="games" role="tab" aria-selected="false">Games</button>
-          <button class="filter-button" type="button" data-filter="tools" role="tab" aria-selected="false" disabled>Tools</button>
-        </div>
-        <div class="launcher-grid" role="list">
-          <button class="launcher-card" role="listitem" type="button" data-app="chess" data-categories="games realtime">
-            <span class="card-media" aria-hidden="true">♞</span>
-            <div class="card-text">
-              <span class="card-eyebrow">WebGPU • Games</span>
-              <span class="card-title">Path-Traced Chess</span>
-              <span class="card-description">Duel on a volumetric board with dynamic lighting and Stockfish assist.</span>
-            </div>
-            <span class="card-cta" aria-hidden="true">Launch</span>
-          </button>
-          <button class="launcher-card" role="listitem" type="button" data-app="neon" data-categories="realtime">
-            <span class="card-media" aria-hidden="true">🌌</span>
-            <div class="card-text">
-              <span class="card-eyebrow">Realtime</span>
-              <span class="card-title">Neon Garden</span>
-              <span class="card-description">Procedural foliage sculpted with light — explore the bloom.</span>
-            </div>
-            <span class="card-cta">Launch</span>
-          </button>
-          <article class="launcher-card is-coming-soon" role="listitem" aria-disabled="true" data-categories="tools">
-            <span class="card-media" aria-hidden="true">🎛️</span>
-            <div class="card-text">
-              <span class="card-eyebrow">Tools</span>
-              <span class="card-title">Sound Lab</span>
-              <span class="card-description">Audio-reactive shader composer for live shows — in exploration.</span>
-            </div>
-            <span class="card-cta">In Research</span>
-          </article>
-        </div>
-        <footer class="launcher-footer">
-          <nav aria-label="External links">
-            <a href="https://github.com/philipmathewkavalam" target="_blank" rel="noreferrer">GitHub</a>
-            <a href="https://www.linkedin.com/in/philipmathewkavalam" target="_blank" rel="noreferrer">LinkedIn</a>
-            <a href="mailto:philipmathewkavalam@gmail.com">Email</a>
-          </nav>
-          <a class="resume-link" href="./PhilipMathewKavalam-Resume.pdf" target="_blank" rel="noreferrer">View Résumé</a>
-        </footer>
-      </div>
-    </div>
     <div id="loading-overlay" class="loading-overlay is-hidden" role="status" aria-live="polite">
       <div class="loading-panel">
-        <div class="spinner" aria-hidden="true"></div>
-        <p>Preparing the board...</p>
+        <canvas id="loading-preview" width="320" height="320" aria-hidden="true"></canvas>
+        <p id="loading-progress" class="loading-progress">Preparing the king… <span id="loading-progress-value">0%</span></p>
       </div>
     </div>
     <canvas id="gpu-canvas" width="1280" height="720" class="is-hidden"></canvas>

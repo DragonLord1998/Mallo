@@ -5,12 +5,13 @@ function getColorKey(color = [1, 1, 1]) {
 }
 
 export class Renderer {
-  constructor({ canvas }) {
+  constructor({ canvas, onProgress } = {}) {
     if (!canvas) {
       throw new Error('Renderer requires a canvas element.');
     }
 
     this.canvas = canvas;
+    this.onProgress = typeof onProgress === 'function' ? onProgress : null;
     this.engine = null;
     this.scene = null;
     this.camera = null;
@@ -39,6 +40,9 @@ export class Renderer {
     this._tempRotation = null;
     this._tempPosition = null;
     this._cameraTarget = null;
+
+    this.assetProgress = new Map();
+    this.totalAssetCount = Object.keys(this.modelDefinitions).length || 1;
   }
 
   async initialize() {
@@ -243,12 +247,41 @@ export class Renderer {
     const offset = new BABYLON.TransformNode(`${assetId}-template-offset`, this.scene);
     offset.parent = root;
 
-    const result = await BABYLON.SceneLoader.ImportMeshAsync(
-      '',
-      'src/apps/chess/assets/',
-      filename,
-      this.scene,
-    );
+    this.#emitProgress(assetId, 0);
+
+    let lastPercent = 0;
+    const progressObserver = (event) => {
+      if (!event) return;
+      let percent = null;
+      const loaded = typeof event.loaded === 'number' ? event.loaded : 0;
+      const total = typeof event.total === 'number' ? event.total : 0;
+
+      if (event.lengthComputable && total > 0) {
+        percent = loaded / total;
+      } else if (loaded > 0) {
+        const estimate = total > 0 ? loaded / total : 0;
+        percent = total > 0 ? estimate : Math.min(1, lastPercent + 0.05);
+      }
+
+      if (percent !== null && Number.isFinite(percent)) {
+        lastPercent = Math.min(Math.max(percent, 0), 0.99);
+        this.#emitProgress(assetId, lastPercent);
+      }
+    };
+
+    let result;
+    try {
+      result = await BABYLON.SceneLoader.ImportMeshAsync(
+        '',
+        'src/apps/chess/assets/',
+        filename,
+        this.scene,
+        progressObserver,
+      );
+    } catch (error) {
+      this.#emitProgress(assetId, 1);
+      throw error;
+    }
 
     const meshes = Array.isArray(result?.meshes) ? result.meshes : [];
     const transformNodes = Array.isArray(result?.transformNodes) ? result.transformNodes : [];
@@ -309,13 +342,38 @@ export class Renderer {
 
     root.setEnabled(false);
 
-    return {
+    const asset = {
       assetId,
       template: root,
       targetHeight,
       baseMaterials: materialKeys,
       tintedCache: new Map(),
     };
+
+    this.#emitProgress(assetId, 1);
+    return asset;
+  }
+
+  #emitProgress(assetId, value) {
+    if (!this.onProgress) {
+      return;
+    }
+
+    const clamped = Math.min(Math.max(typeof value === 'number' ? value : 0, 0), 1);
+    this.assetProgress.set(assetId, clamped);
+
+    const total = this.totalAssetCount || this.assetProgress.size || 1;
+    let sum = 0;
+    for (const percent of this.assetProgress.values()) {
+      sum += percent;
+    }
+    const overall = Math.min(Math.max(sum / total, 0), 1);
+
+    this.onProgress({
+      assetId,
+      value: clamped,
+      overall,
+    });
   }
 
   #resolveModelId(kind) {

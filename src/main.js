@@ -1,4 +1,5 @@
 import { App } from './apps/chess/app.js';
+import { KingLoadingPreview } from './apps/chess/loading/kingPreview.js';
 import { NeonGardenApp } from './apps/neon-garden/app.js';
 
 const hexToRgb = (hex) => {
@@ -20,6 +21,8 @@ const palettes = {
   games: ['#ff5fb5', '#6d4bff', '#ff9f4d'],
   tools: ['#ffd86b', '#5ad1ff', '#ff8d66'],
 };
+
+const MIN_LOADING_DURATION_MS = 5000;
 
 class NebulaBackground {
   constructor(canvas) {
@@ -216,6 +219,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const uiOverlay = document.querySelector('.ui-overlay');
   const launcher = document.getElementById('app-launcher');
   const loadingOverlay = document.getElementById('loading-overlay');
+  const loadingPreviewCanvas = document.getElementById('loading-preview');
+  const loadingProgressText = document.getElementById('loading-progress');
+  const loadingProgressValue = document.getElementById('loading-progress-value');
   const neonContainer = document.getElementById('neon-garden');
   const neonCanvas = document.getElementById('neon-canvas');
   const neonReset = document.getElementById('neon-reset');
@@ -236,6 +242,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let appInstance = null;
   let neonGarden = null;
   let initializing = false;
+  let kingPreview = null;
   let fallbackMessage = '';
   let activeMessage = '';
   let activeLauncherCard = null;
@@ -329,7 +336,8 @@ document.addEventListener('DOMContentLoaded', () => {
     launcher?.classList.add('is-hidden');
     launcher?.setAttribute('aria-hidden', 'true');
     canvas.classList.remove('is-hidden');
-    uiOverlay.classList.remove('is-hidden');
+    uiOverlay.classList.add('is-hidden');
+    uiOverlay.setAttribute('aria-hidden', 'true');
     loadingOverlay.classList.remove('is-hidden');
     loadingOverlay.classList.remove('hidden');
   };
@@ -347,6 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const returnToLauncher = () => {
     canvas.classList.add('is-hidden');
     uiOverlay.classList.add('is-hidden');
+    uiOverlay.setAttribute('aria-hidden', 'true');
     loadingOverlay.classList.add('is-hidden');
     neonContainer?.classList.add('is-hidden');
     neonContainer?.setAttribute('aria-hidden', 'true');
@@ -356,15 +365,18 @@ document.addEventListener('DOMContentLoaded', () => {
     activeLauncherCard = null;
   };
 
-  const initializeChess = async (card) => {
+  const initializeChess = async (card = null) => {
     if (appInstance || initializing) {
       return;
     }
 
     initializing = true;
     activeLauncherCard?.classList.remove('is-active');
-    activeLauncherCard = card;
-    card.disabled = true;
+    activeLauncherCard = card ?? null;
+    card?.classList.add('is-active');
+    if (card) {
+      card.disabled = true;
+    }
     revealChessShell();
 
     fallbackMessage = '';
@@ -372,6 +384,27 @@ document.addEventListener('DOMContentLoaded', () => {
     updateStatusMessage();
 
     lastHistoryCount = 0;
+
+    if (loadingProgressValue) {
+      loadingProgressValue.textContent = '0%';
+    }
+    if (loadingProgressText) {
+      loadingProgressText.dataset.status = 'loading';
+    }
+
+    const loadingStartedAt = performance.now();
+
+    if (loadingPreviewCanvas && !kingPreview) {
+      try {
+        kingPreview = new KingLoadingPreview(loadingPreviewCanvas);
+        await kingPreview.initialize();
+      } catch (error) {
+        console.error('Failed to initialize king preview', error);
+        kingPreview = null;
+      }
+    }
+
+    kingPreview?.update(0);
 
     const app = new App({
       canvas,
@@ -406,6 +439,14 @@ document.addEventListener('DOMContentLoaded', () => {
         activeMessage = message ?? '';
         updateStatusMessage();
       },
+      onLoadProgress: ({ percent }) => {
+        const clamped = Math.min(Math.max(percent ?? 0, 0), 1);
+        const value = Math.round(clamped * 100);
+        if (loadingProgressValue) {
+          loadingProgressValue.textContent = `${value}%`;
+        }
+        kingPreview?.update(clamped);
+      },
     });
 
     appInstance = app;
@@ -420,21 +461,51 @@ document.addEventListener('DOMContentLoaded', () => {
       canvas.classList.add('is-hidden');
       uiOverlay.classList.add('is-hidden');
       loadingOverlay.classList.add('is-hidden');
+      if (loadingProgressText) {
+        loadingProgressText.dataset.status = 'error';
+      }
+      kingPreview?.dispose();
+      kingPreview = null;
       appInstance = null;
       initializing = false;
-      card.disabled = false;
+      if (card) {
+        card.disabled = false;
+        card.classList.remove('is-active');
+      }
       activeLauncherCard = null;
       launcher?.classList.remove('is-hidden');
       launcher?.setAttribute('aria-hidden', 'false');
       return;
     }
 
+    kingPreview?.update(1);
+
+    const elapsed = performance.now() - loadingStartedAt;
+    const remaining = Math.max(0, MIN_LOADING_DURATION_MS - elapsed);
+    if (remaining > 0) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, remaining);
+      });
+    }
+
     resetBtn.disabled = false;
+
+    uiOverlay.classList.remove('is-hidden');
+    uiOverlay.setAttribute('aria-hidden', 'false');
 
     loadingOverlay.classList.add('hidden');
     app.start();
-    card.classList.add('is-active');
+    if (card) {
+      card.classList.add('is-active');
+    }
     initializing = false;
+    setTimeout(() => {
+      kingPreview?.dispose();
+      kingPreview = null;
+    }, 500);
+    if (loadingProgressText) {
+      loadingProgressText.dataset.status = 'ready';
+    }
   };
 
   const initializeNeonGarden = async (card) => {
@@ -498,7 +569,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !launcher?.classList.contains('is-hidden')) {
+    if (event.key === 'Escape' && launcher && !launcher.classList.contains('is-hidden')) {
       return;
     }
     if (event.key === 'Escape' && !neonContainer?.classList.contains('is-hidden')) {
@@ -523,4 +594,6 @@ document.addEventListener('DOMContentLoaded', () => {
       void handler(card);
     });
   });
+
+  void initializeChess();
 });

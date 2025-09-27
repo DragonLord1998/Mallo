@@ -131,10 +131,11 @@ function capitalize(value) {
 }
 
 export class App {
-  constructor({ canvas, onStateChange, onMessage }) {
+  constructor({ canvas, onStateChange, onMessage, onLoadProgress }) {
     this.canvas = canvas;
     this.onStateChange = onStateChange;
     this.onMessage = onMessage;
+    this.onLoadProgress = onLoadProgress;
 
     this.game = new ChessGame();
     this.selectedSquare = null;
@@ -147,6 +148,8 @@ export class App {
 
     this.renderer = null;
     this.camera = null;
+
+    this.handleRendererProgress = this.handleRendererProgress.bind(this);
 
     this.boardInstances = [];
     this.currentPieceStates = [];
@@ -238,7 +241,9 @@ export class App {
   }
 
   async initialize() {
-    this.renderer = new Renderer({ canvas: this.canvas });
+    this.onLoadProgress?.({ percent: 0 });
+
+    this.renderer = new Renderer({ canvas: this.canvas, onProgress: this.handleRendererProgress });
     await this.renderer.initialize();
     this.renderer.setLightDirection(lightDirection);
 
@@ -255,6 +260,8 @@ export class App {
     this.attachEventListeners();
     this.handleResize();
 
+    this.onLoadProgress?.({ percent: 1 });
+
     if (this.singlePlayer) {
       try {
         this.engineReadyPromise = this.prepareEngine();
@@ -269,6 +276,23 @@ export class App {
         this.emitState();
       }
     }
+  }
+
+  handleRendererProgress(detail) {
+    if (typeof this.onLoadProgress !== 'function') {
+      return;
+    }
+
+    const overall = Number.isFinite(detail?.overall) ? detail.overall : undefined;
+    const value = Number.isFinite(detail?.value) ? detail.value : undefined;
+    const percent = Number.isFinite(overall) ? overall : value ?? 0;
+
+    this.onLoadProgress({
+      assetId: detail?.assetId ?? null,
+      value: value ?? null,
+      overall: overall ?? null,
+      percent,
+    });
   }
 
   start() {
