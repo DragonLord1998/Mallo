@@ -25,7 +25,7 @@ export class Renderer {
 
     this.materialCache = new Map();
     this.modelDefinitions = {
-      king: { filename: 'King.glb', targetHeight: 2.4 },
+      king: { filename: 'king.glb', targetHeight: 2.4 },
       queen: { filename: 'queen.glb', targetHeight: 2.4 },
       rook: { filename: 'castle.glb', targetHeight: 2.1 },
       bishop: { filename: 'bishop.glb', targetHeight: 2.2 },

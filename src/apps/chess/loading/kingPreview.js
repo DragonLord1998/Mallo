@@ -192,7 +192,7 @@ export class KingLoadingPreview {
       const result = await BABYLON.SceneLoader.ImportMeshAsync(
         '',
         'src/apps/chess/assets/',
-        'King.glb',
+        'king.glb',
         this.scene,
       );
 
