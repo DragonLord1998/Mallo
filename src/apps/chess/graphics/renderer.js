@@ -1,3 +1,5 @@
+import { importModelAsync } from './modelCache.js';
+
 const BABYLON = globalThis.BABYLON;
 
 function getColorKey(color = [1, 1, 1]) {
@@ -43,6 +45,9 @@ export class Renderer {
 
     this.assetProgress = new Map();
     this.totalAssetCount = Object.keys(this.modelDefinitions).length || 1;
+
+    this.shadowGenerator = null;
+    this.ground = null;
   }
 
   async initialize() {
@@ -63,17 +68,46 @@ export class Renderer {
     this.camera.position.copyFromFloats(0, 8, 8);
     this.camera.setTarget(BABYLON.Vector3.Zero());
 
-    this.light = new BABYLON.DirectionalLight('chess-light', new BABYLON.Vector3(-0.6, -1.0, -0.8), this.scene);
-    this.light.position = new BABYLON.Vector3(6, 8, 6);
-    this.light.intensity = 1.25;
+    this.light = new BABYLON.DirectionalLight('chess-light', new BABYLON.Vector3(-0.55, -1.05, -0.75), this.scene);
+    this.light.position = new BABYLON.Vector3(6, 9, 6);
+    this.light.intensity = 1.35;
 
     const hemiLight = new BABYLON.HemisphericLight('chess-hemi', new BABYLON.Vector3(0, 1, 0), this.scene);
-    hemiLight.intensity = 0.35;
-    hemiLight.specular = new BABYLON.Color3(0.05, 0.05, 0.05);
+    hemiLight.intensity = 0.25;
+    hemiLight.specular = new BABYLON.Color3(0.08, 0.08, 0.08);
+
+    const fillLight = new BABYLON.DirectionalLight('chess-fill', new BABYLON.Vector3(0.4, -0.6, 0.5), this.scene);
+    fillLight.intensity = 0.35;
+    fillLight.shadowEnabled = false;
+
+    const prefersCoarsePointer = typeof window !== 'undefined'
+      ? window.matchMedia('(pointer: coarse)').matches
+      : false;
+    const shadowMapSize = prefersCoarsePointer ? 1024 : 2048;
+    this.shadowGenerator = new BABYLON.ShadowGenerator(shadowMapSize, this.light);
+    this.shadowGenerator.useBlurExponentialShadowMap = !prefersCoarsePointer;
+    this.shadowGenerator.useKernelBlur = !prefersCoarsePointer;
+    this.shadowGenerator.blurKernel = prefersCoarsePointer ? 8 : 18;
+    this.shadowGenerator.darkness = 0.45;
+    this.shadowGenerator.transparencyShadow = true;
+    this.shadowGenerator.bias = 0.002;
 
     this.groups.board.root = new BABYLON.TransformNode('board-root', this.scene);
     this.groups.highlights.root = new BABYLON.TransformNode('highlight-root', this.scene);
     this.groups.pieces.root = new BABYLON.TransformNode('piece-root', this.scene);
+
+    this.ground = BABYLON.MeshBuilder.CreateGround(
+      'chess-ground',
+      { width: 12, height: 12 },
+      this.scene,
+    );
+    this.ground.receiveShadows = true;
+    this.ground.position.y = -0.08;
+    const groundMaterial = new BABYLON.PBRMaterial('chess-ground-material', this.scene);
+    groundMaterial.albedoColor = new BABYLON.Color3(0.06, 0.07, 0.09);
+    groundMaterial.metallic = 0.05;
+    groundMaterial.roughness = 0.92;
+    this.ground.material = groundMaterial;
 
     this._tempScaling = new BABYLON.Vector3(1, 1, 1);
     this._tempRotation = new BABYLON.Quaternion();
@@ -190,7 +224,7 @@ export class Renderer {
       const mesh = BABYLON.MeshBuilder.CreateBox(`${prefix}-${index}`, { size: 1 }, this.scene);
       mesh.parent = group.root;
       mesh.isPickable = false;
-      mesh.receiveShadows = false;
+      mesh.receiveShadows = prefix === 'board';
       mesh.material = this.#getMaterial(instance.color);
       this.#applyTransform(mesh, instance.matrix);
       newMeshes.push(mesh);
@@ -249,35 +283,9 @@ export class Renderer {
 
     this.#emitProgress(assetId, 0);
 
-    let lastPercent = 0;
-    const progressObserver = (event) => {
-      if (!event) return;
-      let percent = null;
-      const loaded = typeof event.loaded === 'number' ? event.loaded : 0;
-      const total = typeof event.total === 'number' ? event.total : 0;
-
-      if (event.lengthComputable && total > 0) {
-        percent = loaded / total;
-      } else if (loaded > 0) {
-        const estimate = total > 0 ? loaded / total : 0;
-        percent = total > 0 ? estimate : Math.min(1, lastPercent + 0.05);
-      }
-
-      if (percent !== null && Number.isFinite(percent)) {
-        lastPercent = Math.min(Math.max(percent, 0), 0.99);
-        this.#emitProgress(assetId, lastPercent);
-      }
-    };
-
     let result;
     try {
-      result = await BABYLON.SceneLoader.ImportMeshAsync(
-        '',
-        'src/apps/chess/assets/',
-        filename,
-        this.scene,
-        progressObserver,
-      );
+      result = await importModelAsync({ scene: this.scene, filename });
     } catch (error) {
       this.#emitProgress(assetId, 1);
       throw error;
@@ -407,6 +415,7 @@ export class Renderer {
 
     let primaryNode = null;
     let fallbackMeshes = [];
+    const shadowMeshes = [];
     const color = Array.isArray(piece?.color) ? piece.color : [1, 1, 1];
 
     if (modelId) {
@@ -419,7 +428,11 @@ export class Renderer {
           const materialMap = this.#getModelMaterialsForColor(asset, color);
           clone.getChildMeshes().forEach((mesh) => {
             mesh.isPickable = false;
-            mesh.receiveShadows = false;
+            mesh.receiveShadows = true;
+            if (this.shadowGenerator) {
+              this.shadowGenerator.addShadowCaster(mesh, true);
+            }
+            shadowMeshes.push(mesh);
             const baseMaterial = mesh.material;
             if (!baseMaterial) {
               return;
@@ -439,6 +452,13 @@ export class Renderer {
 
     if (!primaryNode) {
       fallbackMeshes = this.#createFallbackMeshes(root, piece?.fallbackLayers, color);
+      fallbackMeshes.forEach((mesh) => {
+        mesh.receiveShadows = true;
+        if (this.shadowGenerator) {
+          this.shadowGenerator.addShadowCaster(mesh, true);
+        }
+        shadowMeshes.push(mesh);
+      });
     }
 
     return {
@@ -446,6 +466,7 @@ export class Renderer {
       root,
       primaryNode,
       fallbackMeshes,
+      shadowMeshes,
       modelId,
       type: piece?.type ?? null,
       colorKey: getColorKey(color),
@@ -493,6 +514,11 @@ export class Renderer {
     }
     if (entry.primaryNode) {
       entry.primaryNode.dispose(false, false);
+    }
+    if (Array.isArray(entry.shadowMeshes)) {
+      entry.shadowMeshes.forEach((mesh) => {
+        this.shadowGenerator?.removeShadowCaster(mesh);
+      });
     }
     entry.root?.dispose(false, false);
   }
@@ -543,7 +569,7 @@ export class Renderer {
       );
       mesh.parent = parent;
       mesh.isPickable = false;
-      mesh.receiveShadows = false;
+      mesh.receiveShadows = true;
       mesh.scaling.copyFromFloats(scale[0] ?? 1, scale[1] ?? 1, scale[2] ?? 1);
       const yOffset = typeof layer?.yOffset === 'number' ? layer.yOffset : 0;
       mesh.position.copyFromFloats(0, yOffset, 0);

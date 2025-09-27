@@ -155,6 +155,12 @@ export class App {
     this.currentPieceStates = [];
     this.currentPieceStateMap = new Map();
     this.currentPieceIndexMap = new Map();
+    this.capturedPieceStates = [];
+    this.capturedPiecesByColor = {
+      [PieceColor.WHITE]: [],
+      [PieceColor.BLACK]: [],
+    };
+    this.capturedPieceMap = new Map();
     this.activeAnimations = [];
     this.animationInProgress = false;
     this.animationSettings = {
@@ -312,6 +318,10 @@ export class App {
     this.resetDragState();
     this.clearTouchState();
     this.engineThinking = false;
+    this.capturedPieceStates = [];
+    this.capturedPiecesByColor[PieceColor.WHITE] = [];
+    this.capturedPiecesByColor[PieceColor.BLACK] = [];
+    this.capturedPieceMap.clear();
     if (this.engine) {
       this.engine.stop();
       this.engineReadyPromise = this.engine
@@ -341,6 +351,7 @@ export class App {
   onResize() {
     this.handleResize();
     this.camera.updateProjection();
+    this.layoutCapturedPieces();
   }
 
   handleResize() {
@@ -438,6 +449,7 @@ export class App {
         type: piece.type,
         index: piece.index,
         color: baseColor,
+        pieceColor: piece.color,
         kind,
         position: [x, 0, z],
         rotationY,
@@ -456,14 +468,98 @@ export class App {
       this.currentPieceStates.map((state) => [state.index, state]),
     );
     if (updateRenderer) {
-      this.renderer.updatePieceInstances(this.currentPieceStates);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
     }
+  }
+
+  getCapturedRenderableStates() {
+    return [
+      ...this.capturedPiecesByColor[PieceColor.WHITE],
+      ...this.capturedPiecesByColor[PieceColor.BLACK],
+    ];
+  }
+
+  getRenderablePieceStates() {
+    return [...this.currentPieceStates, ...this.getCapturedRenderableStates()];
+  }
+
+  registerCapturedPiece(state, pieceColor) {
+    if (!state) {
+      return null;
+    }
+    if (this.capturedPieceMap.has(state.id)) {
+      return this.capturedPieceMap.get(state.id);
+    }
+    const clone = {
+      id: state.id,
+      type: state.type,
+      index: state.index,
+      color: Array.isArray(state.color) ? [...state.color] : [1, 1, 1],
+      kind: state.kind,
+      rotationY: state.rotationY,
+      fallbackLayers: Array.isArray(state.fallbackLayers)
+        ? state.fallbackLayers.map((layer) => ({ ...layer }))
+        : [],
+      pieceColor,
+      position: [...state.position],
+    };
+    this.capturedPieceStates.push(clone);
+    this.capturedPiecesByColor[pieceColor].push(clone);
+    this.capturedPieceMap.set(clone.id, clone);
+    return clone;
+  }
+
+  isCapturedPortraitLayout() {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    return window.matchMedia('(max-width: 768px)').matches;
+  }
+
+  computeCapturedSlotPosition(pieceColor, slotIndex) {
+    const portrait = this.isCapturedPortraitLayout();
+    const spacing = portrait ? 0.85 : 0.9;
+    const columns = portrait ? 6 : 4;
+    const column = Math.floor(slotIndex / columns);
+    const row = slotIndex % columns;
+
+    if (portrait) {
+      const zBase = pieceColor === PieceColor.WHITE ? 4.8 : -4.8;
+      const z = zBase + (pieceColor === PieceColor.WHITE ? column * spacing : -column * spacing);
+      const x = (row - (columns - 1) / 2) * spacing;
+      return [x, 0, z];
+    }
+
+    const side = pieceColor === PieceColor.WHITE ? 1 : -1;
+    const xBase = 5.4 * side;
+    const xOffset = side * column * 0.7;
+    const x = xBase - xOffset;
+    const z = (row - (columns - 1) / 2) * spacing;
+    return [x, 0, z];
+  }
+
+  layoutCapturedPieces() {
+    const allCaptured = this.getCapturedRenderableStates();
+    if (allCaptured.length === 0) {
+      return;
+    }
+    for (const color of [PieceColor.WHITE, PieceColor.BLACK]) {
+      const list = this.capturedPiecesByColor[color];
+      list.forEach((state, index) => {
+        const position = this.computeCapturedSlotPosition(color, index);
+        state.position = position;
+        this.renderer.setPieceBasePosition(state.id, position);
+        this.renderer.setPieceOffset(state.id, [0, 0, 0]);
+        this.renderer.setPieceRotationOffset(state.id, 0);
+      });
+    }
+    this.renderer.updatePieceInstances(this.getRenderablePieceStates());
   }
 
   scheduleMoveAnimation({ result, context, previousIndexMap, previousIdMap, nextStates }) {
     if (!Array.isArray(nextStates) || nextStates.length === 0) {
       this.applyPieceStates(nextStates);
-      this.renderer.updatePieceInstances(this.currentPieceStates);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
       return;
     }
 
@@ -471,14 +567,14 @@ export class App {
     const toIndex = typeof context?.to === 'number' ? context.to : null;
     if (fromIndex === null || toIndex === null) {
       this.applyPieceStates(nextStates);
-      this.renderer.updatePieceInstances(this.currentPieceStates);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
       return;
     }
 
     const fromState = previousIndexMap.get(fromIndex);
     if (!fromState) {
       this.applyPieceStates(nextStates);
-      this.renderer.updatePieceInstances(this.currentPieceStates);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
       return;
     }
 
@@ -486,14 +582,14 @@ export class App {
     const toState = nextMap.get(fromState.id);
     if (!toState) {
       this.applyPieceStates(nextStates);
-      this.renderer.updatePieceInstances(this.currentPieceStates);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
       return;
     }
 
     const movingEntry = this.renderer.getPieceEntry(fromState.id);
     if (!movingEntry) {
       this.applyPieceStates(nextStates);
-      this.renderer.updatePieceInstances(this.currentPieceStates);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
       return;
     }
 
@@ -546,17 +642,43 @@ export class App {
     });
 
     if (typeof capturedId === 'number' && previousIdMap.has(capturedId)) {
+      const capturedState = previousIdMap.get(capturedId);
+      const capturedPieceColor = capturedState?.pieceColor ?? result?.captured?.color ?? PieceColor.WHITE;
+      const storedState = this.registerCapturedPiece(capturedState, capturedPieceColor);
+      const capturedIndex = this.capturedPiecesByColor[capturedPieceColor].length - 1;
+      const targetPosition = this.computeCapturedSlotPosition(capturedPieceColor, capturedIndex);
+      storedState.position = targetPosition;
+
+      const currentPosition = Array.isArray(capturedState?.position)
+        ? capturedState.position
+        : [0, 0, 0];
+      const startOffset = [
+        currentPosition[0] - targetPosition[0],
+        currentPosition[1] - targetPosition[1],
+        currentPosition[2] - targetPosition[2],
+      ];
+
+      this.renderer.setPieceBasePosition(capturedId, targetPosition);
+      this.renderer.setPieceOffset(capturedId, startOffset);
+      this.renderer.setPieceRotationOffset(capturedId, 0);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
+
       const captureAnim = {
         kind: 'capture',
         pieceId: capturedId,
-        duration: Math.max(this.animationSettings.moveDuration * 0.6, 0.2),
+        duration: Math.max(this.animationSettings.moveDuration * 0.8, 0.35),
         elapsed: 0,
-        startOffset: [0, 0, 0],
-        targetOffset: [0, -0.8, 0],
+        startOffset,
+        targetOffset: [0, 0.18, 0],
         startScale: 1,
-        endScale: 0.2,
+        endScale: 1,
         onComplete: () => {
-          this.renderer.removePiece(capturedId);
+          this.renderer.setPieceOffset(capturedId, [0, 0, 0]);
+          const entry = this.renderer.getPieceEntry(capturedId);
+          if (entry?.root?.scaling) {
+            entry.root.scaling.copyFromFloats(1, 1, 1);
+          }
+          this.layoutCapturedPieces();
         },
       };
       this.activeAnimations.push(captureAnim);
@@ -722,9 +844,9 @@ export class App {
 
     if (this.activeAnimations.length === 0 && this.animationInProgress) {
       this.animationInProgress = false;
-      this.renderer.updatePieceInstances(this.currentPieceStates);
+      this.renderer.updatePieceInstances(this.getRenderablePieceStates());
       // Reset captured piece scales in case update reuses materials
-      for (const state of this.currentPieceStates) {
+      for (const state of this.getRenderablePieceStates()) {
         const entry = this.renderer.getPieceEntry(state.id);
         if (entry?.root?.scaling) {
           entry.root.scaling.copyFromFloats(1, 1, 1);

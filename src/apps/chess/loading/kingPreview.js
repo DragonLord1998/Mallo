@@ -1,3 +1,5 @@
+import { importModelAsync } from '../graphics/modelCache.js';
+
 const BABYLON = globalThis.BABYLON;
 
 const SAFE_PERCENT = (value) => {
@@ -189,12 +191,7 @@ export class KingLoadingPreview {
     offset.parent = root;
 
     try {
-      const result = await BABYLON.SceneLoader.ImportMeshAsync(
-        '',
-        'src/apps/chess/assets/',
-        'king.glb',
-        this.scene,
-      );
+      const result = await importModelAsync({ scene: this.scene, filename: 'king.glb' });
 
       const meshes = Array.isArray(result?.meshes) ? result.meshes : [];
       const nodes = Array.isArray(result?.transformNodes) ? result.transformNodes : [];
