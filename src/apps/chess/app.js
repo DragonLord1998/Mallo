@@ -393,6 +393,12 @@ export class App {
         case PieceType.QUEEN:
           kind = 'queen-model';
           break;
+        case PieceType.ROOK:
+          kind = 'rook-model';
+          break;
+        case PieceType.KNIGHT:
+          kind = 'knight-model';
+          break;
         case PieceType.BISHOP:
           kind = 'bishop-model';
           break;

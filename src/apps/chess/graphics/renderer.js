@@ -26,8 +26,10 @@ export class Renderer {
     this.modelDefinitions = {
       king: { filename: 'King.glb', targetHeight: 2.4 },
       queen: { filename: 'queen.glb', targetHeight: 2.4 },
-      pawn: { filename: 'pawn.glb', targetHeight: 1.45 },
+      rook: { filename: 'castle.glb', targetHeight: 2.1 },
       bishop: { filename: 'bishop.glb', targetHeight: 2.2 },
+      knight: { filename: 'knight.glb', targetHeight: 2.3 },
+      pawn: { filename: 'pawn.glb', targetHeight: 1.45 },
     };
     this.modelAssets = new Map();
     this.modelLoadPromises = new Map();
@@ -322,10 +324,14 @@ export class Renderer {
         return 'king';
       case 'queen-model':
         return 'queen';
+      case 'rook-model':
+        return 'rook';
       case 'pawn-model':
         return 'pawn';
       case 'bishop-model':
         return 'bishop';
+      case 'knight-model':
+        return 'knight';
       default:
         return null;
     }
@@ -428,9 +434,9 @@ export class Renderer {
       entry.fallbackMeshes.forEach((mesh) => mesh.dispose());
     }
     if (entry.primaryNode) {
-      entry.primaryNode.dispose(true, true);
+      entry.primaryNode.dispose(false, false);
     }
-    entry.root?.dispose(true, true);
+    entry.root?.dispose(false, false);
   }
 
   #applyPieceColor(entry, color) {
